@@ -1,0 +1,260 @@
+# Exercise Rules Configuration
+# All angles in degrees with ±5° tolerance applied in code
+# Research-backed thresholds from biomechanics studies
+
+general:
+  confidence_threshold: 0.7  # Minimum landmark confidence
+  smoothing_frames: 3  # Number of frames for moving average
+  fps_target: 30
+  feedback_cooldown: 1.0  # Seconds between same feedback
+
+calibration:
+  required: true
+  standing_pose_duration: 3.0  # Seconds to hold standing pose
+  flexibility_test: true
+
+# SQUAT
+squat:
+  name: "Squat"
+  camera_view: "side"
+  key_landmarks:
+    - "LEFT_HIP"
+    - "LEFT_KNEE" 
+    - "LEFT_ANKLE"
+    - "LEFT_SHOULDER"
+  
+  phases:
+    standing:
+      knee_angle: [160, 180]
+      description: "Starting position"
+    
+    descent:
+      knee_angle: [110, 160]
+      description: "Lowering down"
+    
+    bottom:
+      knee_angle: [80, 110]
+      hip_angle: [90, 105]
+      back_angle: [0, 50]  # From vertical
+      ankle_angle: [10, 30]  # Dorsiflexion
+      description: "Parallel or below parallel"
+    
+    ascent:
+      knee_angle: [110, 160]
+      description: "Coming back up"
+
+  rep_counting:
+    down_threshold: 100  # Knee angle to register "down"
+    up_threshold: 165  # Knee angle to register "up"
+    min_rep_time: 1.0  # Minimum seconds per rep
+  
+  form_checks:
+    - name: "knee_depth"
+      check: "knee_angle"
+      range: [75, 115]
+      error_message: "Squat deeper - knees should reach 80-110°"
+    
+    - name: "back_angle"
+      check: "back_angle"
+      range: [0, 50]
+      error_message: "Keep chest up - excessive forward lean detected"
+    
+    - name: "knee_valgus"
+      check: "knee_alignment"
+      threshold: 10
+      error_message: "Knees caving inward - push knees out"
+
+# PUSH-UP
+pushup:
+  name: "Push-up"
+  camera_view: "side"
+  key_landmarks:
+    - "LEFT_SHOULDER"
+    - "LEFT_ELBOW"
+    - "LEFT_WRIST"
+    - "LEFT_HIP"
+    - "LEFT_ANKLE"
+  
+  phases:
+    up:
+      elbow_angle: [155, 180]
+      body_alignment: [0, 15]  # Deviation from straight line
+      description: "Arms extended"
+    
+    descent:
+      elbow_angle: [90, 155]
+      description: "Lowering down"
+    
+    down:
+      elbow_angle: [65, 95]
+      body_alignment: [0, 15]
+      shoulder_angle: [50, 60]
+      description: "Chest near ground"
+    
+    ascent:
+      elbow_angle: [90, 155]
+      description: "Pushing up"
+
+  rep_counting:
+    down_threshold: 85  # Elbow angle to register "down"
+    up_threshold: 160  # Elbow angle to register "up"
+    min_rep_time: 0.8
+  
+  form_checks:
+    - name: "elbow_depth"
+      check: "elbow_angle"
+      range: [65, 95]
+      error_message: "Go lower - elbows should reach 70-90°"
+    
+    - name: "body_alignment"
+      check: "body_alignment"
+      range: [0, 15]
+      error_message: "Keep body straight - no sagging or piking"
+    
+    - name: "elbow_flare"
+      check: "elbow_to_body_angle"
+      range: [15, 50]
+      error_message: "Elbows flaring too wide"
+
+# PLANK
+plank:
+  name: "Plank"
+  camera_view: "side"
+  key_landmarks:
+    - "LEFT_SHOULDER"
+    - "LEFT_ELBOW"
+    - "LEFT_HIP"
+    - "LEFT_KNEE"
+    - "LEFT_ANKLE"
+  
+  phases:
+    hold:
+      body_alignment: [155, 185]
+      hip_angle: [155, 185]
+      shoulder_angle: [85, 95]
+      elbow_angle: [85, 95]  # For low plank
+      description: "Hold straight body position"
+
+  rep_counting:
+    mode: "duration"  # Not reps, but time
+    min_hold_time: 10.0  # Minimum seconds for valid hold
+  
+  form_checks:
+    - name: "hip_sag"
+      check: "hip_angle"
+      range: [155, 185]
+      error_message: "Hips sagging - engage core and lift hips"
+    
+    - name: "hip_pike"
+      check: "hip_angle" 
+      range: [155, 185]
+      error_message: "Hips too high - lower them to straight line"
+    
+    - name: "body_alignment"
+      check: "body_alignment"
+      range: [155, 185]
+      error_message: "Maintain straight line from head to heels"
+
+# SHOULDER PRESS
+shoulder_press:
+  name: "Shoulder Press"
+  camera_view: "side"
+  key_landmarks:
+    - "LEFT_SHOULDER"
+    - "LEFT_ELBOW" 
+    - "LEFT_WRIST"
+    - "LEFT_HIP"
+  
+  phases:
+    starting:
+      elbow_angle: [75, 105]
+      shoulder_flexion: [0, 15]
+      description: "Starting position at shoulder level"
+    
+    pressing:
+      elbow_angle: [105, 165]
+      description: "Pressing upward"
+    
+    lockout:
+      elbow_angle: [165, 185]
+      shoulder_flexion: [155, 185]
+      description: "Arms overhead, near full extension"
+    
+    lowering:
+      elbow_angle: [105, 165]
+      description: "Lowering back down"
+
+  rep_counting:
+    down_threshold: 100  # Elbow angle at starting position
+    up_threshold: 170    # Elbow angle at lockout
+    min_rep_time: 1.2
+  
+  form_checks:
+    - name: "lockout_extension"
+      check: "elbow_angle"
+      range: [165, 185]
+      error_message: "Fully extend arms overhead - reach lockout"
+    
+    - name: "starting_position"
+      check: "elbow_angle"
+      range: [75, 105]
+      error_message: "Start with elbows at 90° (shoulder level)"
+    
+    - name: "elbow_flare"
+      check: "elbow_to_body_angle"
+      range: [25, 50]
+      error_message: "Keep elbows at 30-45° angle - don't flare out"
+
+# BICEP CURL
+bicep_curl:
+  name: "Bicep Curl"
+  camera_view: "side"
+  key_landmarks:
+    - "LEFT_SHOULDER"
+    - "LEFT_ELBOW"
+    - "LEFT_WRIST"
+  
+  phases:
+    extended:
+      elbow_angle: [165, 180]
+      shoulder_angle: [0, 10]  # Minimal forward movement
+      description: "Arms straight down"
+    
+    lifting:
+      elbow_angle: [90, 165]
+      description: "Curling up"
+    
+    contracted:
+      elbow_angle: [25, 50]
+      shoulder_angle: [0, 15]
+      description: "Fully contracted"
+    
+    lowering:
+      elbow_angle: [90, 165]
+      description: "Lowering down"
+
+  rep_counting:
+    down_threshold: 50  # Elbow angle to register "up" (contracted)
+    up_threshold: 170  # Elbow angle to register "down" (extended)
+    min_rep_time: 1.0
+  
+  form_checks:
+    - name: "full_contraction"
+      check: "elbow_angle"
+      range: [25, 50]
+      error_message: "Curl higher - full contraction needed"
+    
+    - name: "full_extension"
+      check: "elbow_angle"
+      range: [165, 180]
+      error_message: "Fully extend arms at bottom"
+    
+    - name: "shoulder_stable"
+      check: "shoulder_angle"
+      range: [0, 15]
+      error_message: "Keep shoulders stable - no swinging"
+    
+    - name: "elbow_position"
+      check: "elbow_drift"
+      threshold: 5  # Max cm movement from start position
+      error_message: "Keep elbows locked at sides"

@@ -1,0 +1,16 @@
+# Core dependencies
+opencv-python==4.8.1.78
+mediapipe==0.10.9
+numpy==1.24.3
+PyYAML==6.0.1
+
+# Optional: For audio feedback (can be added later)
+# pyttsx3==2.90
+
+# For FastAPI backend integration (future)
+fastapi==0.109.0
+uvicorn==0.27.0
+python-multipart==0.0.9
+
+# Development/Testing
+pytest==8.0.0
