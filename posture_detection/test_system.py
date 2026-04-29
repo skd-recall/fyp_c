@@ -82,10 +82,10 @@ def test_camera():
     
     try:
         import cv2
-        cap = cv2.VideoCapture(1)
+        cap = cv2.VideoCapture(0)
         
         if not cap.isOpened():
-            print("✗ Camera not accessible (ID: 1)")
+            print("✗ Camera not accessible (ID: 0)")
             print("  Try: python -c \"import cv2; cap=cv2.VideoCapture(1); print(cap.isOpened())\"")
             cap.release()
             return False

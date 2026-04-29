@@ -9,6 +9,7 @@ import numpy as np
 from typing import Optional, Tuple
 import logging
 from dataclasses import dataclass
+from utils.landmark_utils import LandmarkExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -131,12 +132,13 @@ class PoseDetector:
     ) -> np.ndarray:
         """
         Draw pose landmarks on frame
+        Hide face landmarks for privacy/clarity
         
         Args:
             frame: Image to draw on
             landmarks: MediaPipe pose landmarks
             draw_body: Draw body skeleton
-            draw_face: Draw face landmarks
+           
             draw_hands: Draw hand landmarks
         
         Returns:
@@ -146,15 +148,48 @@ class PoseDetector:
             return frame
         
         try:
-            # Choose landmark drawing spec based on what to draw
+            body_connections = [
+                # Torso
+                (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.RIGHT_SHOULDER),
+                (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_HIP),
+                (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_HIP),
+                (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.RIGHT_HIP),
+            
+                # Left arm
+                (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_ELBOW),
+                (mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.LEFT_WRIST),
+            
+                # Right arm
+                (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_ELBOW),
+                (mp_pose.PoseLandmark.RIGHT_ELBOW, mp_pose.PoseLandmark.RIGHT_WRIST),
+            
+                # Left leg
+                (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE),
+                (mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.LEFT_ANKLE),
+            
+                # Right leg
+                (mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE),
+                (mp_pose.PoseLandmark.RIGHT_KNEE, mp_pose.PoseLandmark.RIGHT_ANKLE),
+            ]
+        
             if draw_body:
-                # Draw body connections
+                # Draw only body landmarks (no face)
                 mp_drawing.draw_landmarks(
                     frame,
                     landmarks,
-                    mp_pose.POSE_CONNECTIONS,
-                    landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
-                )
+                    body_connections,  # Use body-only connections
+                    landmark_drawing_spec=mp_drawing.DrawingSpec(
+                        color=(0, 255, 0),  # Green joints
+                        thickness=2,
+                        circle_radius=3
+                    ),
+                    connection_drawing_spec=mp_drawing.DrawingSpec(
+                        color=(255, 255, 255),  # White lines
+                        thickness=2
+                    )
+                )     
+                
+                
             
             return frame
             
@@ -228,7 +263,101 @@ class PoseDetector:
         if elapsed_time == 0:
             return 0.0
         return frame_count / elapsed_time
-    
+    def draw_color_coded_skeleton(
+        self,
+        frame: np.ndarray,
+        landmarks,
+        angles: dict,
+        exercise_name: str,
+        form_score: float
+    ) -> np.ndarray:
+        """
+        Draw skeleton with color-coded joints based on form quality
+        Green = good angle, Yellow = acceptable, Red = bad angle
+        """
+        if landmarks is None:
+            return frame
+        
+        height, width = frame.shape[:2]
+        
+        # Define joints to check for each exercise
+        key_joints = {
+            'squat': ['LEFT_KNEE', 'LEFT_HIP'],
+            'shoulder_press': ['LEFT_ELBOW', 'LEFT_SHOULDER'],
+            'pushup': ['LEFT_ELBOW', 'LEFT_SHOULDER'],
+            'plank': ['LEFT_HIP'],
+            'bicep_curl': ['LEFT_ELBOW']
+        }
+        
+        important_joints = key_joints.get(exercise_name, [])
+        
+        # Draw connections
+        connections = [
+            (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.RIGHT_SHOULDER),
+            (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_HIP),
+            (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_HIP),
+            (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.RIGHT_HIP),
+            (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_ELBOW),
+            (mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.LEFT_WRIST),
+            (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_ELBOW),
+            (mp_pose.PoseLandmark.RIGHT_ELBOW, mp_pose.PoseLandmark.RIGHT_WRIST),
+            (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE),
+            (mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.LEFT_ANKLE),
+            (mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE),
+            (mp_pose.PoseLandmark.RIGHT_KNEE, mp_pose.PoseLandmark.RIGHT_ANKLE),
+        ]
+        
+        # Overall form color
+        if form_score > 80:
+            connection_color = (0, 255, 0)  # Green
+        elif form_score > 60:
+            connection_color = (0, 255, 255)  # Yellow
+        else:
+            connection_color = (0, 0, 255)  # Red
+        
+        # Draw connections
+        for connection in connections:
+            start_idx = connection[0].value
+            end_idx = connection[1].value
+            
+            if start_idx < len(landmarks.landmark) and end_idx < len(landmarks.landmark):
+                start = landmarks.landmark[start_idx]
+                end = landmarks.landmark[end_idx]
+                
+                if start.visibility > 0.5 and end.visibility > 0.5:
+                    start_point = (int(start.x * width), int(start.y * height))
+                    end_point = (int(end.x * width), int(end.y * height))
+                    
+                    cv2.line(frame, start_point, end_point, connection_color, 3)
+        
+        # Draw joints with specific colors
+        for idx, landmark in enumerate(landmarks.landmark):
+            if landmark.visibility < 0.5:
+                continue
+            
+            x = int(landmark.x * width)
+            y = int(landmark.y * height)
+            
+            # Determine joint color
+            landmark_name = None
+            for name, lm_idx in LandmarkExtractor.LANDMARK_MAP.items():
+                if lm_idx.value == idx:
+                    landmark_name = name
+                    break
+            
+            if landmark_name in important_joints:
+                # Key joint - color based on form
+                joint_color = connection_color
+                radius = 8
+            else:
+                # Regular joint
+                joint_color = (255, 255, 255)  # White
+                radius = 5
+            
+            cv2.circle(frame, (x, y), radius, joint_color, -1)
+            cv2.circle(frame, (x, y), radius + 2, (0, 0, 0), 2)  # Black outline
+        
+        return frame
     def draw_fps(
         self, 
         frame: np.ndarray, 

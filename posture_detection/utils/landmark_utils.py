@@ -221,3 +221,73 @@ def get_landmark_connections() -> List[Tuple[str, str]]:
         ('RIGHT_HIP', 'RIGHT_KNEE'),
         ('RIGHT_KNEE', 'RIGHT_ANKLE'),
     ]
+class CoordinateNormalizer:
+    """
+    Normalize landmark coordinates relative to body center
+    Allows detection of off-center users
+    """
+    
+    @staticmethod
+    def normalize_to_body_center(
+        landmarks_dict: dict,
+        image_width: int,
+        image_height: int
+    ) -> dict:
+        """
+        Normalize all landmarks relative to body center
+        
+        Args:
+            landmarks_dict: Dictionary of landmark name -> LandmarkPoint
+            image_width: Image width
+            image_height: Image height
+        
+        Returns:
+            Normalized landmarks dictionary
+        """
+        # Find body center (hip midpoint)
+        if 'LEFT_HIP' in landmarks_dict and 'RIGHT_HIP' in landmarks_dict:
+            center_x = (landmarks_dict['LEFT_HIP'].x + landmarks_dict['RIGHT_HIP'].x) / 2
+            center_y = (landmarks_dict['LEFT_HIP'].y + landmarks_dict['RIGHT_HIP'].y) / 2
+        elif 'LEFT_SHOULDER' in landmarks_dict and 'RIGHT_SHOULDER' in landmarks_dict:
+            # Fallback to shoulder center
+            center_x = (landmarks_dict['LEFT_SHOULDER'].x + landmarks_dict['RIGHT_SHOULDER'].x) / 2
+            center_y = (landmarks_dict['LEFT_SHOULDER'].y + landmarks_dict['RIGHT_SHOULDER'].y) / 2
+        else:
+            # Can't normalize - return as-is
+            return landmarks_dict
+        
+        # Calculate body size for scaling
+        body_height = CoordinateNormalizer._estimate_body_height(landmarks_dict)
+        
+        if body_height == 0:
+            return landmarks_dict
+        
+        # Normalize each landmark
+        normalized = {}
+        for name, point in landmarks_dict.items():
+            # Translate to center
+            norm_x = (point.x - center_x) / body_height
+            norm_y = (point.y - center_y) / body_height
+            
+            # Keep original visibility and z
+            normalized[name] = LandmarkPoint(
+                x=norm_x * image_width / 2 + image_width / 2,  # Re-center to image
+                y=norm_y * image_height / 2 + image_height / 2,
+                z=point.z,
+                visibility=point.visibility
+            )
+        
+        return normalized
+    
+    @staticmethod
+    def _estimate_body_height(landmarks_dict: dict) -> float:
+        """Estimate body height from landmarks"""
+        # Try shoulder to ankle
+        if 'LEFT_SHOULDER' in landmarks_dict and 'LEFT_ANKLE' in landmarks_dict:
+            return abs(landmarks_dict['LEFT_SHOULDER'].y - landmarks_dict['LEFT_ANKLE'].y)
+        
+        # Try hip to ankle
+        if 'LEFT_HIP' in landmarks_dict and 'LEFT_ANKLE' in landmarks_dict:
+            return abs(landmarks_dict['LEFT_HIP'].y - landmarks_dict['LEFT_ANKLE'].y) * 1.5
+        
+        return 0.0

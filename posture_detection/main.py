@@ -38,7 +38,7 @@ class PostureDetectionSystem:
         'bicep_curl': BicepCurlExercise
     }
     
-    def __init__(self, camera_id: int = 1):
+    def __init__(self, camera_id: int = 0):
         """Initialize system"""
         logger.info("Initializing Posture Detection System")
         
@@ -66,79 +66,144 @@ class PostureDetectionSystem:
         logger.info("System initialized successfully")
     
     def start_calibration(self) -> bool:
-        """Start user calibration process"""
+        """
+        Simplified calibration - show a 5-second countdown, then grab one
+        clean frame to extract body proportions. No sample collection.
+        """
         logger.info("Starting calibration")
-        
+
         if not self.camera_manager.open():
             logger.error("Failed to open camera")
             return False
+
         exercise_name = self.current_exercise.exercise_name if self.current_exercise else "general"
-        
-        self.calibrator.start_calibration()
-        calibration_duration = 5.0
+        instructions = CalibrationGuide.get_calibration_instructions(exercise_name)
+        instruction_lines = instructions.split('\n')
+
+        calibration_duration = 5.0  # seconds to hold pose
         start_time = time.time()
-        frame_count = 0
-        
+        calibration_done = False
+
         while True:
             ret, frame = self.camera_manager.read_frame()
             if not ret:
                 continue
-            
-            # Detect pose
+
+            elapsed = time.time() - start_time
+            remaining = max(0, calibration_duration - elapsed)
+
             result = self.pose_detector.detect_pose(frame)
-            
+
             if result and result.success:
-                # Draw landmarks
                 frame = self.pose_detector.draw_landmarks(frame, result.landmarks)
-                
-                # Add calibration frame
-                elapsed = time.time() - start_time
-                if elapsed < calibration_duration:
-                    self.calibrator.add_calibration_frame(
+
+                # Check quality every frame and show feedback
+                is_good, quality, message = self.calibrator.check_frame_quality(
+                    result.landmarks, result.frame_width, result.frame_height
+                )
+
+                # Color feedback: green = good, red = bad
+                msg_color = (0, 255, 0) if is_good else (0, 0, 255)
+                self.pose_detector.draw_text(
+                    frame, message, (10, 30), font_scale=0.6,
+                    color=msg_color, background=True, background_color=(0, 0, 0)
+                )
+
+                # Quality bar
+                bar_width = int(quality * 3)
+                bar_color = (0, 255, 0) if quality > 70 else (0, 255, 255) if quality > 50 else (0, 0, 255)
+                cv2.rectangle(frame, (10, 50), (10 + bar_width, 68), bar_color, -1)
+                cv2.rectangle(frame, (10, 50), (310, 68), (255, 255, 255), 1)
+
+                # Countdown timer
+                timer_text = f"Hold still: {remaining:.1f}s"
+                self.pose_detector.draw_text(
+                    frame, timer_text, (10, 85), font_scale=0.6,
+                    color=(255, 255, 255), background=True, background_color=(0, 0, 0)
+                )
+
+                # If time is up and quality is good - calibrate now
+                if elapsed >= calibration_duration and is_good:
+                    success = self.calibrator.calibrate_from_frame(
                         result.landmarks, result.frame_width, result.frame_height
                     )
-                    frame_count += 1
-                    
-                    # Show exercise-specific instructions
-                    if elapsed < 1.0:
-                    # Show full instructions at start
-                        exercise_name = self.current_exercise.exercise_name if self.current_exercise else "general"
-                        instructions = CalibrationGuide.get_calibration_instructions(exercise_name)
-                        y_pos = 30
-                        for line in instructions.split('\n'):
-                            self.pose_detector.draw_text(
-                                frame, line, (10, y_pos), font_scale=0.5
-                            )
-                            y_pos += 25
-                    else:
-                    # Show countdown
-                        instruction = CalibrationGuide.get_current_step(
-                            elapsed, calibration_duration
-                        )
-                        self.pose_detector.draw_text(
-                            frame, instruction, (10, 30), font_scale=0.7, 
-                            color=(0, 255, 0)
-                        )
-                else:
-                    # Complete calibration
-                    if self.calibrator.complete_calibration():
+                    if success:
                         self.is_calibrated = True
-                        logger.info("Calibration completed successfully")
-                        time.sleep(1)
+                        self.pose_detector.draw_text(
+                            frame, "Calibration Complete!", (10, 110),
+                            font_scale=0.8, color=(0, 255, 0),
+                            background=True, background_color=(0, 0, 0)
+                        )
+                        cv2.imshow("Calibration", frame)
+                        cv2.waitKey(1000)
+                        calibration_done = True
                         break
                     else:
-                        logger.error("Calibration failed")
-                        return False
-            
+                        # Bad frame at end - reset timer and try again
+                        start_time = time.time()
+                        logger.warning("Frame not good enough at end - resetting timer")
+
+                elif elapsed >= calibration_duration and not is_good:
+                    # Time up but bad quality - reset timer
+                    start_time = time.time()
+                    self.pose_detector.draw_text(
+                        frame, "Restarting - step back so full body is visible",
+                        (10, 110), font_scale=0.5, color=(0, 100, 255),
+                        background=True, background_color=(0, 0, 0)
+                    )
+
+            else:
+                # No pose detected
+                self.pose_detector.draw_text(
+                    frame, "No person detected - step into frame",
+                    (10, 30), font_scale=0.7, color=(0, 0, 255),
+                    background=True, background_color=(0, 0, 0)
+                )
+                # Reset timer when no person visible
+                start_time = time.time()
+
+            # Show instructions on the right side
+            for i, line in enumerate(instruction_lines):
+                self.pose_detector.draw_text(
+                    frame, line, (frame.shape[1] - 320, 30 + i * 22),
+                    font_scale=0.45, color=(200, 200, 200),
+                    background=False
+                )
+
             cv2.imshow("Calibration", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                logger.info("Calibration cancelled")
-                break
-        
+                logger.info("Calibration cancelled by user")
+                cv2.destroyAllWindows()
+                self.camera_manager.release()
+                return False
+
         cv2.destroyAllWindows()
         self.camera_manager.release()
-        return self.is_calibrated
+        return calibration_done
+                
+
     
+    def _check_calibration_position_quality(self, landmarks) -> bool:
+        """
+        Check if user is in good position for calibration
+        Returns True if all key landmarks are visible with high confidence
+        """
+        if not landmarks:
+            return False
+    
+    # Check confidence of key landmarks
+        key_indices = [11, 12, 13, 14, 23, 24, 25, 26]  # Shoulders, elbows, hips, knees
+    
+        confidence_threshold = 0.6
+        good_count = 0
+    
+        for idx in key_indices:
+            if idx < len(landmarks.landmark):
+                if landmarks.landmark[idx].visibility >= confidence_threshold:
+                        good_count += 1
+    
+    # Need at least 6 out of 8 landmarks to be high quality
+        return good_count >= 6
     def select_exercise(self, exercise_name: str) -> bool:
         """Select exercise to perform"""
         exercise_name = exercise_name.lower().replace(" ", "_")
@@ -156,7 +221,96 @@ class PostureDetectionSystem:
         
         logger.info(f"Exercise selected: {exercise_name}")
         return True
-    
+    def show_countdown(self, duration: int = 3):
+        """
+        Show visual countdown before exercise starts
+        
+        Args:
+            duration: Countdown duration in seconds
+        """
+        if not self.camera_manager.is_opened:
+            if not self.camera_manager.open():
+                return
+        
+        import time
+        for i in range(duration, 0, -1):
+            start_time = time.time()
+            
+            # Show countdown for 1 second
+            while time.time() - start_time < 1.0:
+                ret, frame = self.camera_manager.read_frame()
+                if not ret:
+                    continue
+                
+                # Detect pose for visual feedback
+                result = self.pose_detector.detect_pose(frame)
+                if result and result.success:
+                    frame = self.pose_detector.draw_landmarks(frame, result.landmarks)
+                
+                # Draw large countdown number
+                height, width = frame.shape[:2]
+                countdown_text = str(i)
+                
+                # Huge font for countdown
+                (text_width, text_height), _ = cv2.getTextSize(
+                    countdown_text, cv2.FONT_HERSHEY_SIMPLEX, 5.0, 10
+                )
+                x_pos = (width - text_width) // 2
+                y_pos = (height + text_height) // 2
+                
+                # Draw countdown with glow effect
+                # Shadow
+                self.pose_detector.draw_text(
+                    frame, countdown_text, (x_pos + 5, y_pos + 5),
+                    font_scale=5.0, color=(0, 0, 0), thickness=12,
+                    background=False
+                )
+                # Main text
+                self.pose_detector.draw_text(
+                    frame, countdown_text, (x_pos, y_pos),
+                    font_scale=5.0, color=(0, 255, 0), thickness=10,
+                    background=False
+                )
+                
+                # Instruction text
+                instruction = "Get into starting position"
+                (inst_width, _), _ = cv2.getTextSize(
+                    instruction, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2
+                )
+                inst_x = (width - inst_width) // 2
+                self.pose_detector.draw_text(
+                    frame, instruction, (inst_x, y_pos + 100),
+                    font_scale=0.8, color=(255, 255, 255), thickness=2,
+                    background=True, background_color=(0, 0, 0)
+                )
+                
+                cv2.imshow("Posture Detection", frame)
+                cv2.waitKey(1)
+        
+        # Final "GO!" message
+        for _ in range(5):  # Show for ~0.5 seconds
+            ret, frame = self.camera_manager.read_frame()
+            if ret:
+                result = self.pose_detector.detect_pose(frame)
+                if result and result.success:
+                    frame = self.pose_detector.draw_landmarks(frame, result.landmarks)
+                
+                height, width = frame.shape[:2]
+                go_text = "GO!"
+                (go_width, go_height), _ = cv2.getTextSize(
+                    go_text, cv2.FONT_HERSHEY_SIMPLEX, 5.0, 10
+                )
+                x_pos = (width - go_width) // 2
+                y_pos = (height + go_height) // 2
+                
+                self.pose_detector.draw_text(
+                    frame, go_text, (x_pos, y_pos),
+                    font_scale=5.0, color=(0, 255, 0), thickness=10,
+                    background=False
+                )
+                
+                cv2.imshow("Posture Detection", frame)
+                cv2.waitKey(100)
     def run_exercise_session(self):
         """Run exercise detection session"""
         if self.current_exercise is None:
@@ -220,11 +374,20 @@ class PostureDetectionSystem:
                         frame = self._draw_feedback(
                             frame, measurements, rep_status, form_score, feedback_message
                         )
-                    
                 # Draw landmarks
-                frame = self.pose_detector.draw_landmarks(frame, result.landmarks)
-            
-            # Calculate and display FPS
+                
+                if measurements and form_score is not None:
+                    frame = self.pose_detector.draw_color_coded_skeleton(
+                        frame, 
+                        result.landmarks,
+                        measurements.angles,
+                        self.current_exercise.exercise_name,
+                        form_score
+                    )
+                else:
+                    # Fallback to regular skeleton
+                    frame = self.pose_detector.draw_landmarks(frame, result.landmarks)
+                            # Calculate and display FPS
             current_time = time.time()
             fps = self.pose_detector.calculate_fps(frame_count, start_time, current_time)
             frame = self.pose_detector.draw_fps(frame, fps)
@@ -257,47 +420,109 @@ class PostureDetectionSystem:
         }
         return angle_map.get(exercise_type, 'knee_angle')
     
+
     def _draw_feedback(
         self, frame, measurements, rep_status, form_score, feedback_message
     ):
-        """Draw feedback on frame"""
-        y_offset = 30
-        line_height = 30
+        """
+        Draw mobile-optimized feedback layout
+        - Top center: Feedback message
+        - Bottom center: Rep count & form score
+        """
+        height, width = frame.shape[:2]
         
-        # Rep count
-        self.pose_detector.draw_text(
-            frame, f"Reps: {rep_status['rep_count']}", (10, y_offset)
-        )
-        y_offset += line_height
-        
-        # Phase
-        self.pose_detector.draw_text(
-            frame, f"Phase: {measurements.phase}", (10, y_offset)
-        )
-        y_offset += line_height
-        
-        # Form score
-        color = (0, 255, 0) if form_score > 80 else (0, 255, 255) if form_score > 60 else (0, 0, 255)
-        self.pose_detector.draw_text(
-            frame, f"Form: {form_score:.0f}%", (10, y_offset), color=color
-        )
-        y_offset += line_height
-        
-        # Feedback message
+        # ===== TOP CENTER: Feedback Message =====
         if feedback_message:
-            self.pose_detector.draw_text(
-                frame, feedback_message, (10, y_offset), font_scale=0.5
-            )
+            # Split long messages into multiple lines
+            max_chars_per_line = 35
+            lines = []
+            words = feedback_message.split()
+            current_line = ""
+            
+            for word in words:
+                if len(current_line) + len(word) + 1 <= max_chars_per_line:
+                    current_line += word + " "
+                else:
+                    if current_line:
+                        lines.append(current_line.strip())
+                    current_line = word + " "
+            if current_line:
+                lines.append(current_line.strip())
+            
+            # Draw feedback at top center
+            y_start = 40
+            for i, line in enumerate(lines):
+                # Calculate text width for centering
+                (text_width, text_height), _ = cv2.getTextSize(
+                    line, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2
+                )
+                x_centered = (width - text_width) // 2
+                
+                # Color based on form score
+                if form_score > 80:
+                    color = (0, 255, 0)  # Green - good
+                elif form_score > 60:
+                    color = (0, 255, 255)  # Yellow - warning
+                else:
+                    color = (0, 0, 255)  # Red - error
+                
+                self.pose_detector.draw_text(
+                    frame, line, (x_centered, y_start + i * 35),
+                    font_scale=0.7, color=color, thickness=2,
+                    background=True, background_color=(0, 0, 0)
+                )
+        
+        # ===== BOTTOM CENTER: Rep Count & Stats =====
+        bottom_y = height - 100
+        
+        # Rep count - Large and prominent
+        rep_text = f"REPS: {rep_status['rep_count']}"
+        (rep_width, rep_height), _ = cv2.getTextSize(
+            rep_text, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3
+        )
+        rep_x = (width - rep_width) // 2
+        
+        self.pose_detector.draw_text(
+            frame, rep_text, (rep_x, bottom_y),
+            font_scale=1.2, color=(255, 255, 255), thickness=3,
+            background=True, background_color=(0, 0, 0)
+        )
+        
+        # Form score - Below rep count
+        form_text = f"Form: {form_score:.0f}%"
+        form_color = (0, 255, 0) if form_score > 80 else (0, 255, 255) if form_score > 60 else (0, 0, 255)
+        (form_width, form_height), _ = cv2.getTextSize(
+            form_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2
+        )
+        form_x = (width - form_width) // 2
+        
+        self.pose_detector.draw_text(
+            frame, form_text, (form_x, bottom_y + 40),
+            font_scale=0.8, color=form_color, thickness=2,
+            background=True, background_color=(0, 0, 0)
+        )
+        
+        # Phase indicator - Small text at very bottom
+        phase_text = f"Phase: {measurements.phase.upper()}"
+        (phase_width, _), _ = cv2.getTextSize(
+            phase_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+        )
+        phase_x = (width - phase_width) // 2
+        
+        self.pose_detector.draw_text(
+            frame, phase_text, (phase_x, bottom_y + 70),
+            font_scale=0.5, color=(200, 200, 200), thickness=1,
+            background=False
+        )
         
         return frame
-
 
 def main():
     """Main entry point"""
     print("=== AI-Based Gym Trainer: Posture Detection System ===\n")
     
     # Initialize system
-    system = PostureDetectionSystem(camera_id=0)
+    system = PostureDetectionSystem(camera_id=1)  # Using laptop camera
     
     # Select exercise FIRST
     print("Available exercises:")
@@ -333,18 +558,26 @@ def main():
         return
     
     print("\nCalibration successful!")
+    print("\nGet ready! Exercise will start in 3 seconds...")
+    print("- Position your phone/camera")
+    print("- Step back into view")
+    print("- Get into starting position")
+    import time
+    for i in range(3, 0, -1):
+        print(f"{i}...")
+        time.sleep(1)
+    print("START!\n")
+    print("Controls: Press 'Q' to quit, 'R' to reset counter")
+
+
+    system.show_countdown(duration=3)
+
+    
     
     exercise_name = exercise_map.get(choice, 'squat')
     if not system.select_exercise(exercise_name):
         print("Failed to select exercise. Exiting.")
         return
-    
-    print(f"\nExercise selected: {exercise_name}")
-    print("\nInstructions:")
-    print("- Stand in camera view")
-    print("- Press 'Q' to quit")
-    print("- Press 'R' to reset rep counter")
-    input("\nPress Enter to start...")
     
     # Run session
     system.run_exercise_session()
