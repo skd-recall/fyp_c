@@ -357,7 +357,9 @@ class PostureDetectionSystem:
                     
                     if smoothed_angle is not None:
                         # Update rep counter
-                        rep_status = self.rep_counter.update(smoothed_angle)
+                        form_feedback = self.current_exercise.validate_form(measurements)
+                        form_score = self.current_exercise.calculate_form_score(measurements)
+                        rep_status = self.rep_counter.update(smoothed_angle, form_is_valid=form_feedback.is_correct)
                         
                         # Validate form
                         form_feedback = self.current_exercise.validate_form(measurements)

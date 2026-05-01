@@ -103,10 +103,8 @@ class UserCalibrator:
         image_height: int
     ) -> Tuple[bool, float, str]:
         """
-        Check if a frame has good enough landmarks for calibration.
-
-        Returns:
-            (is_good: bool, quality_score: float 0-100, message: str)
+        Check if frame has good landmarks AND person is standing upright.
+        Rejects sitting, crouching, lying down poses.
         """
         try:
             extractor = LandmarkExtractor()
@@ -116,42 +114,91 @@ class UserCalibrator:
 
             visible_count = len(points)
             total = len(self.REQUIRED_LANDMARKS)
-
-            # Count how many pass visibility threshold
             confident_count = sum(
                 1 for p in points.values()
                 if p.visibility >= self.MIN_VISIBILITY
             )
-
-            # Average visibility of found landmarks
             avg_vis = (
                 sum(p.visibility for p in points.values()) / len(points)
                 if points else 0.0
             )
-
             quality_score = (confident_count / total) * 100.0
 
+            # --- Check 1: Enough landmarks visible ---
             if confident_count < 8:
                 missing = total - confident_count
-                return (
-                    False,
-                    quality_score,
-                    f"Step back - {missing} body parts not visible"
-                )
+                return (False, quality_score,
+                        f"Step back - {missing} body parts not visible. Full body must be in frame.")
 
-            if avg_vis < 0.5:
-                return (
-                    False,
-                    quality_score,
-                    "Improve lighting or reduce background clutter"
-                )
+            # --- Check 2: Person must be STANDING (vertical body check) ---
+            # Get key landmarks for pose validation
+            l_shoulder = points.get('LEFT_SHOULDER')
+            r_shoulder = points.get('RIGHT_SHOULDER')
+            l_hip = points.get('LEFT_HIP')
+            r_hip = points.get('RIGHT_HIP')
+            l_knee = points.get('LEFT_KNEE')
+            r_knee = points.get('RIGHT_KNEE')
+            l_ankle = points.get('LEFT_ANKLE')
+            r_ankle = points.get('RIGHT_ANKLE')
 
-            return (True, quality_score, f"Good! Hold still... ({confident_count}/{total} landmarks)")
+            # Use whichever side is more visible
+            shoulder = l_shoulder if (l_shoulder and l_shoulder.visibility > 0.5) else r_shoulder
+            hip = l_hip if (l_hip and l_hip.visibility > 0.5) else r_hip
+            knee = l_knee if (l_knee and l_knee.visibility > 0.5) else r_knee
+            ankle = l_ankle if (l_ankle and l_ankle.visibility > 0.5) else r_ankle
+
+            if not all([shoulder, hip, knee, ankle]):
+                return (False, quality_score,
+                        "Cannot detect full body - ensure head to feet are visible.")
+
+            # In image coordinates: Y increases DOWNWARD
+            # So for standing: shoulder.y < hip.y < knee.y < ankle.y
+
+            # Check vertical ordering (shoulders above hips above knees above ankles)
+            if not (shoulder.y < hip.y):
+                return (False, quality_score,
+                        "Please STAND UP straight - shoulders must be above hips.")
+
+            if not (hip.y < knee.y):
+                return (False, quality_score,
+                        "Please STAND UP - you appear to be sitting or crouching too low.")
+
+            if not (knee.y < ankle.y):
+                return (False, quality_score,
+                        "Please STAND UP - full legs must be visible and upright.")
+
+            # Check legs are reasonably straight (not bent/sitting)
+            # Knee angle: hip->knee->ankle. When standing straight this is ~170-180°
+            from core.angle_calculator import calculate_knee_angle
+            knee_angle = calculate_knee_angle(hip, knee, ankle)
+            if knee_angle is not None and knee_angle < 140:
+                return (False, quality_score,
+                        f"Please STAND STRAIGHT - legs appear bent ({knee_angle:.0f}°). Straighten up.")
+
+            # Check body is roughly vertical (not lying sideways)
+            # Shoulder to hip vector should be mostly vertical
+            body_dx = abs(shoulder.x - hip.x)
+            body_dy = abs(shoulder.y - hip.y)
+            if body_dy < body_dx:
+                return (False, quality_score,
+                        "Please face the camera standing upright - body appears tilted sideways.")
+
+            # Check person fills reasonable portion of frame (not too far)
+            body_height_ratio = abs(ankle.y - shoulder.y) / image_height
+            if body_height_ratio < 0.35:
+                return (False, quality_score,
+                        "Step closer to camera - you are too far away.")
+
+            if body_height_ratio > 0.97:
+                return (False, quality_score,
+                        "Step back from camera - too close, full body not visible.")
+
+            return (True, quality_score,
+                    f"Good standing position! Hold still... ({confident_count}/{total} landmarks)")
 
         except Exception as e:
             logger.error(f"Error checking frame quality: {e}")
-            return (False, 0.0, f"Detection error - ensure full body is visible")
-
+            return (False, 0.0, "Detection error - ensure full body is visible in good lighting.")
     def calibrate_from_frame(
         self,
         landmarks,

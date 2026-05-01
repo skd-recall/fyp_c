@@ -134,7 +134,7 @@ class SquatExercise(BaseExercise):
             severity=severity
         )
     def _compute_measurements_from_points(self, landmark_points, width, height):
-        from core.angle_calculator import AngleCalculator, calculate_knee_angle, calculate_hip_angle
+        from ..core.angle_calculator import AngleCalculator, calculate_knee_angle, calculate_hip_angle
         try:
             # Try left side first, fall back to right
             shoulder = landmark_points.get('LEFT_SHOULDER') or landmark_points.get('RIGHT_SHOULDER')
@@ -270,7 +270,7 @@ class PushupExercise(BaseExercise):
             severity=severity
         )
     def _compute_measurements_from_points(self, landmark_points, width, height):
-        from core.angle_calculator import AngleCalculator, calculate_elbow_angle
+        from ..core.angle_calculator import AngleCalculator, calculate_elbow_angle
         try:
             shoulder = landmark_points.get('LEFT_SHOULDER') or landmark_points.get('RIGHT_SHOULDER')
             elbow = landmark_points.get('LEFT_ELBOW') or landmark_points.get('RIGHT_ELBOW')
@@ -378,7 +378,7 @@ class PlankExercise(BaseExercise):
             severity=severity
         )
     def _compute_measurements_from_points(self, landmark_points, width, height):
-        from core.angle_calculator import AngleCalculator, calculate_elbow_angle
+        from ..core.angle_calculator import AngleCalculator, calculate_elbow_angle
         try:
             shoulder = landmark_points.get('LEFT_SHOULDER') or landmark_points.get('RIGHT_SHOULDER')
             elbow = landmark_points.get('LEFT_ELBOW') or landmark_points.get('RIGHT_ELBOW')
@@ -513,7 +513,7 @@ class ShoulderPressExercise(BaseExercise):
             severity=severity
         )
     def _compute_measurements_from_points(self, landmark_points, width, height):
-        from core.angle_calculator import AngleCalculator, calculate_elbow_angle, calculate_shoulder_angle
+        from ..core.angle_calculator import AngleCalculator, calculate_elbow_angle, calculate_shoulder_angle
         try:
             shoulder = landmark_points.get('LEFT_SHOULDER') or landmark_points.get('RIGHT_SHOULDER')
             elbow = landmark_points.get('LEFT_ELBOW') or landmark_points.get('RIGHT_ELBOW')
@@ -547,35 +547,107 @@ class ShoulderPressExercise(BaseExercise):
 
 
 class BicepCurlExercise(BaseExercise):
-    """Bicep curl exercise implementation"""
-    
+    """
+    Bicep Curl Exercise
+    Camera: FRONT-FACING
+    Key signals: elbow angle, upper arm vertical angle, shoulder stability, tempo
+    """
+
     def __init__(self):
         super().__init__('bicep_curl')
-    
-    def extract_measurements(self, landmarks, image_width: int, image_height: int) -> Optional[ExerciseMeasurements]:
-        result = self.extract_measurements_both_sides(landmarks, image_width, image_height)
-        if result:
-            return result
+        self._angle_history = []   # for tempo detection
+        self._history_maxlen = 5
+
+    def _get_best_side(self, landmark_points: dict) -> str:
+        """Pick the side with better average visibility"""
+        left_names = ['LEFT_SHOULDER', 'LEFT_ELBOW', 'LEFT_WRIST']
+        right_names = ['RIGHT_SHOULDER', 'RIGHT_ELBOW', 'RIGHT_WRIST']
+
+        left_vis = sum(
+            landmark_points[n].visibility
+            for n in left_names if n in landmark_points
+        )
+        right_vis = sum(
+            landmark_points[n].visibility
+            for n in right_names if n in landmark_points
+        )
+        return 'LEFT' if left_vis >= right_vis else 'RIGHT'
+
+    def extract_measurements(
+        self,
+        landmarks,
+        image_width: int,
+        image_height: int
+    ) -> Optional[ExerciseMeasurements]:
+
         landmark_points = self.extract_landmarks(landmarks, image_width, image_height)
         if landmark_points is None:
             return None
-        
+
         try:
-            shoulder = landmark_points['LEFT_SHOULDER']
-            elbow = landmark_points['LEFT_ELBOW']
-            wrist = landmark_points['LEFT_WRIST']
-            
+            # Pick the more visible/stable side
+            side = self._get_best_side(landmark_points)
+
+            shoulder = landmark_points.get(f'{side}_SHOULDER')
+            elbow    = landmark_points.get(f'{side}_ELBOW')
+            wrist    = landmark_points.get(f'{side}_WRIST')
+            hip      = landmark_points.get(f'{side}_HIP') or \
+                       landmark_points.get('LEFT_HIP') or \
+                       landmark_points.get('RIGHT_HIP')
+
+            if not all([shoulder, elbow, wrist]):
+                return None
+
+            # --- Primary angle: elbow flexion ---
             elbow_angle = calculate_elbow_angle(shoulder, elbow, wrist)
-            
             if elbow_angle is None:
                 return None
-            
-            angles = {'elbow_angle': elbow_angle}
-            
-            phase = self.determine_phase(ExerciseMeasurements(
-                angles=angles, alignments={}, distances={}, phase='', is_valid=True
-            ))
-            
+
+            # --- Upper arm angle from vertical ---
+            # When arm hangs at side correctly: ~0-20°
+            # When elbow drifts forward: >40°
+            upper_arm_angle = AngleCalculator.calculate_angle_from_vertical(
+                shoulder, elbow
+            ) or 0.0
+
+            # --- Shoulder stability ---
+            # hip->shoulder->elbow angle. Low = arm at side (good), high = swinging
+            shoulder_angle = 0.0
+            if hip:
+                shoulder_angle = calculate_shoulder_angle(
+                    hip, shoulder, elbow
+                ) or 0.0
+
+            # --- Tempo: track angle velocity ---
+            self._angle_history.append(elbow_angle)
+            if len(self._angle_history) > self._history_maxlen:
+                self._angle_history.pop(0)
+
+            # Degrees per frame (approximate velocity)
+            angle_velocity = 0.0
+            if len(self._angle_history) >= 2:
+                # Average change per frame over last N frames
+                changes = [
+                    abs(self._angle_history[i] - self._angle_history[i-1])
+                    for i in range(1, len(self._angle_history))
+                ]
+                angle_velocity = sum(changes) / len(changes)
+
+            angles = {
+                'elbow_angle':     elbow_angle,
+                'upper_arm_angle': upper_arm_angle,
+                'shoulder_angle':  shoulder_angle,
+                'angle_velocity':  angle_velocity,
+            }
+
+            # Determine phase using direction-aware logic
+            phase = self.determine_phase(
+                ExerciseMeasurements(
+                    angles=angles, alignments={},
+                    distances={}, phase='', is_valid=True
+                )
+            )
+
             return ExerciseMeasurements(
                 angles=angles,
                 alignments={},
@@ -583,73 +655,116 @@ class BicepCurlExercise(BaseExercise):
                 phase=phase,
                 is_valid=True
             )
+
         except Exception as e:
-            logger.error(f"Error extracting bicep curl measurements: {e}")
+            logger.error(f"BicepCurl extract error: {e}")
             return None
-    
+
     def determine_phase(self, measurements: ExerciseMeasurements) -> str:
+        """
+        Direction-aware phase detection.
+        Uses elbow angle thresholds with clear zones:
+          extended:   165-180  (arm fully straight at bottom)
+          lifting:     60-165  going UP
+          contracted:  25-60   (arm fully bent at top)
+          lowering:    60-165  going DOWN
+        """
         elbow_angle = measurements.angles.get('elbow_angle', 180)
-        
-        if elbow_angle >= 165:
+
+        if elbow_angle >= 160:
             return 'extended'
-        elif elbow_angle >= 90:
-            return 'lifting'
-        elif elbow_angle >= 25:
+        elif elbow_angle <= 55:
             return 'contracted'
         else:
-            return 'lowering'
-    
-    def validate_form(self, measurements: ExerciseMeasurements) -> FormFeedback:
+            # Mid-range: need direction from rep_counter if available
+            # Default to 'lifting' — direction tracking in rep_counter
+            # handles the actual rep logic correctly regardless
+            return 'lifting'
 
-        messages = []
+    def validate_form(self, measurements: ExerciseMeasurements) -> FormFeedback:
         corrections = []
-    
-        elbow_angle = measurements.angles.get('elbow_angle')
-        phase = measurements.phase
-    
+        messages = []
+
+        elbow_angle    = measurements.angles.get('elbow_angle', 90)
+        upper_arm_angle = measurements.angles.get('upper_arm_angle', 0)
+        shoulder_angle  = measurements.angles.get('shoulder_angle', 0)
+        angle_velocity  = measurements.angles.get('angle_velocity', 0)
+        phase           = measurements.phase
+
+        # ── 1. Elbow drift (upper arm from vertical) ──────────────────────
+        # 0-30°  : good (natural armpit opening is fine)
+        # 30-45° : soft warning
+        # >45°   : clear error
+        if upper_arm_angle > 45:
+            corrections.append(
+                f"Elbows swinging too far forward ({upper_arm_angle:.0f}°) "
+                f"- keep upper arms at your sides"
+            )
+        elif upper_arm_angle > 30:
+            corrections.append(
+                f"Elbows drifting slightly ({upper_arm_angle:.0f}°) "
+                f"- try to keep them closer to your body"
+            )
+
+        # ── 2. Shoulder stability (all phases) ────────────────────────────
+        # Lowering is more lenient (natural slight movement allowed)
+        shoulder_limit = 35 if phase == 'lowering' else 28
+        if shoulder_angle > shoulder_limit:
+            corrections.append(
+                f"Shoulders moving too much ({shoulder_angle:.0f}°) "
+                f"- keep shoulders still, isolate the biceps"
+            )
+
+        # ── 3. Full contraction at top ────────────────────────────────────
         if phase == 'contracted':
-            # Adjust contraction range
-            contract_base_range = self.get_angle_range('contracted', 'elbow_angle')
-            contract_adjusted = self.adjust_threshold_for_user(
-                contract_base_range,
-                getattr(self, 'calibrator', None)
+            if elbow_angle > 60:
+                corrections.append(
+                    f"Curl higher - squeeze at the top "
+                    f"(current: {elbow_angle:.0f}°, target: below 55°)"
+                )
+
+        # ── 4. Full extension at bottom ───────────────────────────────────
+        if phase == 'extended':
+            if elbow_angle < 155:
+                corrections.append(
+                    f"Fully extend arms at bottom "
+                    f"(current: {elbow_angle:.0f}°, target: above 160°)"
+                )
+
+        # ── 5. Tempo / momentum check ─────────────────────────────────────
+        # >15° change per frame at 30fps = ~450°/sec = way too fast
+        # Typical good rep: 2-4 seconds = ~50-80°/sec = ~1.5-2.5° per frame
+        if angle_velocity > 12:
+            corrections.append(
+                f"Slow down - you are swinging the weight "
+                f"(speed: {angle_velocity:.1f}°/frame). "
+                f"Take 2-3 seconds up and down."
             )
-        
-            if elbow_angle and elbow_angle > contract_adjusted[1]:
-                corrections.append(f"Curl higher - reach {int(contract_adjusted[0])}-{int(contract_adjusted[1])}°")
-    
-        elif phase == 'extended':
-            # Adjust extension range
-            extend_base_range = self.get_angle_range('extended', 'elbow_angle')
-            extend_adjusted = self.adjust_threshold_for_user(
-                extend_base_range,
-                getattr(self, 'calibrator', None)
-            )
-        
-            if elbow_angle and elbow_angle < extend_adjusted[0]:
-                corrections.append("Fully extend arms at bottom")
-        # elif phase == 'extended':
-        #     if elbow_angle and elbow_angle < 165:
-        #         corrections.append("Fully extend arms at bottom")
-        
+
         is_correct = len(corrections) == 0
         severity = 'good' if is_correct else 'warning'
-        
+
         if is_correct:
-            messages.append("Good curl form!")
-        
+            if phase == 'contracted':
+                messages.append("Perfect! Squeeze the bicep at the top!")
+            elif phase == 'extended':
+                messages.append("Good starting position - ready to curl!")
+            else:
+                messages.append("Good form - keep it up!")
+
         return FormFeedback(
             is_correct=is_correct,
             messages=messages,
             corrections=corrections,
             severity=severity
         )
+
     def _compute_measurements_from_points(self, landmark_points, width, height):
-        from core.angle_calculator import calculate_elbow_angle
         try:
-            shoulder = landmark_points.get('LEFT_SHOULDER') or landmark_points.get('RIGHT_SHOULDER')
-            elbow = landmark_points.get('LEFT_ELBOW') or landmark_points.get('RIGHT_ELBOW')
-            wrist = landmark_points.get('LEFT_WRIST') or landmark_points.get('RIGHT_WRIST')
+            side = self._get_best_side(landmark_points)
+            shoulder = landmark_points.get(f'{side}_SHOULDER')
+            elbow    = landmark_points.get(f'{side}_ELBOW')
+            wrist    = landmark_points.get(f'{side}_WRIST')
 
             if not all([shoulder, elbow, wrist]):
                 return None
@@ -658,11 +773,17 @@ class BicepCurlExercise(BaseExercise):
             if elbow_angle is None:
                 return None
 
-            angles = {'elbow_angle': elbow_angle}
-            from exercises.base_exercise import ExerciseMeasurements
-            temp = ExerciseMeasurements(angles=angles, alignments={}, distances={}, phase='', is_valid=True)
+            angles = {'elbow_angle': elbow_angle, 'upper_arm_angle': 0,
+                      'shoulder_angle': 0, 'angle_velocity': 0}
+            temp = ExerciseMeasurements(
+                angles=angles, alignments={}, distances={},
+                phase='', is_valid=True
+            )
             phase = self.determine_phase(temp)
-            return ExerciseMeasurements(angles=angles, alignments={}, distances={}, phase=phase, is_valid=True)
+            return ExerciseMeasurements(
+                angles=angles, alignments={}, distances={},
+                phase=phase, is_valid=True
+            )
         except Exception as e:
             logger.error(f"BicepCurl compute error: {e}")
             return None
