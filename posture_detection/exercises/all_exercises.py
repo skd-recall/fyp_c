@@ -15,159 +15,389 @@ logger = logging.getLogger(__name__)
 
 
 class SquatExercise(BaseExercise):
-    """Squat exercise implementation"""
-    
+    """
+    Squat Exercise - Front-facing camera with 30-45 degree side turn recommended.
+
+    Signals used (priority order):
+    1. Knee angle            - primary rep counting signal
+    2. Direction tracking    - solves up/down phase ambiguity
+    3. Hip Y vs Knee Y       - depth (normalized to body height)
+    4. Hip-knee-vertical     - thigh tilt / hip hinge proxy
+    5. Back angle            - forward lean check (ALL phases)
+    6. Knee valgus           - normalized to body width
+    7. Tempo via time delta  - device-independent speed check
+    """
+
+    # ── Thresholds (beginner-friendly, inspired by reference code) ────────
+    STANDING_THRESH    = 160   # knee_angle above this → standing
+    BOTTOM_THRESH      =  95   # knee_angle below this → bottom
+    DIRECTION_DEADBAND =   2.0 # degrees; smaller changes ignored for direction
+
+    # Back lean: some forward lean is NORMAL. Only flag excessive.
+    BACK_ANGLE_WARN    =  45   # degrees from vertical → yellow warning
+    BACK_ANGLE_ERROR   =  60   # degrees from vertical → red error
+
+    # Hip depth (normalized): positive = hip below knee (good)
+    DEPTH_THRESH       = -0.02  # hip must be at least this close to knee level
+
+    # Knee valgus normalized to hip width: flag if knee moves inward > 15% of hip width
+    VALGUS_WARN        =  0.10
+    VALGUS_ERROR       =  0.20
+
+    # Tempo: max degrees per SECOND (device-independent)
+    TEMPO_MAX_DEG_SEC  = 120.0  # faster than this = swinging
+
     def __init__(self):
         super().__init__('squat')
-    
-    def extract_measurements(self, landmarks, image_width: int, image_height: int) -> Optional[ExerciseMeasurements]:
-        
-        result = self.extract_measurements_both_sides(landmarks, image_width, image_height)
-        if result:
-            return result
-    
+
+        # Direction tracking
+        self.prev_knee_angle  = None
+        self.direction        = 'down'   # 'down' = descending, 'up' = ascending
+
+        # Tempo tracking (time-based, not frame-based)
+        self._last_timestamp  = None
+        self._last_angle      = None
+
+        # Cold-start guard: ignore direction until we have seen a standing frame
+        self._seen_standing   = False
+
+        # Body proportion cache (filled from calibrator if available)
+        self._body_height_px  = None   # total height in pixels from calibration
+        self._hip_width_px    = None   # hip width in pixels from calibration
+
+    # ── Internal helpers ──────────────────────────────────────────────────
+
+    def _get_best_side(self, pts: dict) -> str:
+        """Pick the side with better average landmark visibility."""
+        left_vis  = sum(pts[n].visibility for n in
+                        ['LEFT_HIP', 'LEFT_KNEE', 'LEFT_ANKLE'] if n in pts)
+        right_vis = sum(pts[n].visibility for n in
+                        ['RIGHT_HIP', 'RIGHT_KNEE', 'RIGHT_ANKLE'] if n in pts)
+        return 'LEFT' if left_vis >= right_vis else 'RIGHT'
+
+    def _hip_knee_vertical(self, hip, knee) -> float:
+        """Angle of thigh (hip→knee) from vertical. 0°=standing, ~80°=full squat."""
+        return AngleCalculator.calculate_angle_from_vertical(hip, knee) or 0.0
+
+    def _update_direction(self, knee_angle: float) -> None:
+        """Update movement direction with deadband to avoid noise flicker."""
+        if self.prev_knee_angle is not None:
+            delta = knee_angle - self.prev_knee_angle
+            if delta < -self.DIRECTION_DEADBAND:
+                self.direction = 'down'   # knee angle decreasing = going down
+            elif delta > self.DIRECTION_DEADBAND:
+                self.direction = 'up'     # knee angle increasing = coming up
+        self.prev_knee_angle = knee_angle
+
+    def _calc_tempo(self, knee_angle: float, timestamp: float) -> float:
+        """
+        Returns angular velocity in degrees/second.
+        Device-independent because we use real time, not frame count.
+        """
+        velocity = 0.0
+        if self._last_timestamp is not None and self._last_angle is not None:
+            dt = timestamp - self._last_timestamp
+            if dt > 0.001:   # avoid division by near-zero
+                velocity = abs(knee_angle - self._last_angle) / dt
+        self._last_timestamp = timestamp
+        self._last_angle     = knee_angle
+        return velocity
+
+    def _normalize_valgus(self, raw_valgus: float, hip_width: float) -> float:
+        """Normalize valgus distance to hip width so it is resolution-independent."""
+        if hip_width and hip_width > 0:
+            return raw_valgus / hip_width
+        return raw_valgus / 50.0   # fallback: assume 50px hip width
+
+    def _normalize_depth(self, hip_depth_diff: float, body_height: float) -> float:
+        """
+        Normalize hip-depth difference to body height.
+        Positive = hip below knee (good depth).
+        """
+        if body_height and body_height > 0:
+            return hip_depth_diff / body_height
+        return hip_depth_diff / 400.0  # fallback: assume 400px body height
+
+    # ── Core methods ──────────────────────────────────────────────────────
+
+    def extract_measurements(
+        self,
+        landmarks,
+        image_width: int,
+        image_height: int
+    ) -> Optional[ExerciseMeasurements]:
+
         landmark_points = self.extract_landmarks(landmarks, image_width, image_height)
-        
         if landmark_points is None:
             return None
-        
+
+        import time
+        timestamp = time.time()
+
         try:
-            # Extract key points
-            shoulder = landmark_points['LEFT_SHOULDER']
-            hip = landmark_points['LEFT_HIP']
-            knee = landmark_points['LEFT_KNEE']
-            ankle = landmark_points['LEFT_ANKLE']
-            
-            # Calculate angles
-            knee_angle = calculate_knee_angle(hip, knee, ankle)
-            hip_angle = calculate_hip_angle(shoulder, hip, knee)
-            back_angle = AngleCalculator.calculate_angle_from_vertical(shoulder, hip)
-            shin_angle = AngleCalculator.calculate_shin_angle(knee, ankle)
-            
-            if None in [knee_angle, hip_angle, back_angle]:
+            side = self._get_best_side(landmark_points)
+            opp  = 'RIGHT' if side == 'LEFT' else 'LEFT'
+
+            shoulder = (landmark_points.get(f'{side}_SHOULDER') or
+                        landmark_points.get(f'{opp}_SHOULDER'))
+            hip      = landmark_points.get(f'{side}_HIP')
+            knee     = landmark_points.get(f'{side}_KNEE')
+            ankle    = landmark_points.get(f'{side}_ANKLE')
+
+            if not all([hip, knee, ankle]):
                 return None
-            
+
+            # ── 1. Primary angles ──────────────────────────────────────
+            knee_angle = calculate_knee_angle(hip, knee, ankle)
+            if knee_angle is None:
+                return None
+
+            hip_angle  = calculate_hip_angle(shoulder, hip, knee) if shoulder else 0.0
+            back_angle = (AngleCalculator.calculate_angle_from_vertical(shoulder, hip)
+                          if shoulder else 0.0) or 0.0
+
+            # ── 2. Thigh tilt (hip hinge proxy) ───────────────────────
+            hip_knee_vert = self._hip_knee_vertical(hip, knee)
+
+            # ── 3. Hip depth vs knee depth (normalized) ───────────────
+            # In image coords Y increases downward → hip.y > knee.y = hips below knees
+            raw_depth_diff = hip.y - knee.y
+
+            # Try to get body height from calibration, else estimate from frame
+            body_height = self._body_height_px
+            if body_height is None:
+                # Estimate: shoulder-to-ankle distance
+                if shoulder and ankle:
+                    body_height = abs(ankle.y - shoulder.y)
+                else:
+                    body_height = image_height * 0.75
+
+            norm_depth = self._normalize_depth(raw_depth_diff, body_height)
+
+            # ── 4. Knee valgus (both sides for reliability) ───────────
+            l_hip   = landmark_points.get('LEFT_HIP')
+            l_knee  = landmark_points.get('LEFT_KNEE')
+            l_ankle = landmark_points.get('LEFT_ANKLE')
+            r_hip   = landmark_points.get('RIGHT_HIP')
+            r_knee  = landmark_points.get('RIGHT_KNEE')
+            r_ankle = landmark_points.get('RIGHT_ANKLE')
+
+            # Hip width for normalization
+            hip_width = self._hip_width_px
+            if hip_width is None and l_hip and r_hip:
+                hip_width = abs(l_hip.x - r_hip.x)
+                if hip_width < 10:
+                    hip_width = 50.0
+
+            raw_valgus_l = 0.0
+            raw_valgus_r = 0.0
+            if l_hip and l_knee and l_ankle:
+                raw_valgus_l = abs(
+                    AngleCalculator.calculate_knee_valgus(l_hip, l_knee, l_ankle) or 0.0
+                )
+            if r_hip and r_knee and r_ankle:
+                raw_valgus_r = abs(
+                    AngleCalculator.calculate_knee_valgus(r_hip, r_knee, r_ankle) or 0.0
+                )
+
+            # Use the worse side, normalized
+            raw_valgus   = max(raw_valgus_l, raw_valgus_r)
+            norm_valgus  = self._normalize_valgus(raw_valgus, hip_width)
+
+            # ── 5. Tempo (degrees/second, device-independent) ─────────
+            tempo = self._calc_tempo(knee_angle, timestamp)
+
+            # ── 6. Direction + phase ───────────────────────────────────
+            self._update_direction(knee_angle)
+
             angles = {
-                'knee_angle': knee_angle,
-                'hip_angle': hip_angle,
-                'back_angle': back_angle,
-                'shin_angle': shin_angle if shin_angle else 0
+                'knee_angle':      knee_angle,
+                'hip_angle':       hip_angle,
+                'back_angle':      back_angle,
+                'hip_knee_vert':   hip_knee_vert,
+                'norm_depth':      norm_depth,
+                'norm_valgus':     norm_valgus,
+                'tempo':           tempo,
             }
-            
-            phase = self.determine_phase(ExerciseMeasurements(
-                angles=angles, alignments={}, distances={}, phase='', is_valid=True
-            ))
-            
+
+            phase = self.determine_phase(
+                ExerciseMeasurements(
+                    angles=angles, alignments={},
+                    distances={}, phase='', is_valid=True
+                )
+            )
+
             return ExerciseMeasurements(
                 angles=angles,
                 alignments={},
-                distances={},
+                distances={'norm_depth': norm_depth},
                 phase=phase,
                 is_valid=True
             )
-        except Exception as e:
-            logger.error(f"Error extracting squat measurements: {e}")
-            return None
-    
-    def determine_phase(self, measurements: ExerciseMeasurements) -> str:
-        knee_angle = measurements.angles.get('knee_angle', 180)
-        
-        if knee_angle >= 160:
-            return 'standing'
-        elif knee_angle >= 110:
-            return 'descent'
-        elif knee_angle >= 80:
-            return 'bottom'
-        else:
-            return 'ascent'
-    
-    def validate_form(self, measurements: ExerciseMeasurements) -> FormFeedback:
 
-            
-        messages = []
+        except Exception as e:
+            logger.error(f"Squat extract error: {e}")
+            return None
+
+    def determine_phase(self, measurements: ExerciseMeasurements) -> str:
+        """
+        Direction-aware phase detection.
+        Cold-start guard ensures we never start in a mid-squat phase.
+        """
+        knee_angle = measurements.angles.get('knee_angle', 170)
+
+        # Mark when user has been seen standing (cold-start fix)
+        if knee_angle >= self.STANDING_THRESH:
+            self._seen_standing = True
+
+        # If never seen standing yet, always return standing
+        # (prevents wrong phase on first detection if user is already squatting)
+        if not self._seen_standing:
+            return 'standing'
+
+        # Clear zones
+        if knee_angle >= self.STANDING_THRESH:
+            return 'standing'
+        if knee_angle <= self.BOTTOM_THRESH:
+            return 'bottom'
+
+        # Mid-range: use direction
+        return 'descent' if self.direction == 'down' else 'ascent'
+
+    def validate_form(self, measurements: ExerciseMeasurements) -> FormFeedback:
         corrections = []
-    
-        knee_angle = measurements.angles.get('knee_angle')
-        hip_angle = measurements.angles.get('hip_angle')
-        back_angle = measurements.angles.get('back_angle')
-    
-        phase = measurements.phase
-    
+        messages    = []
+
+        knee_angle   = measurements.angles.get('knee_angle',    170)
+        back_angle   = measurements.angles.get('back_angle',      0)
+        hip_knee_vert = measurements.angles.get('hip_knee_vert',  0)
+        norm_depth   = measurements.angles.get('norm_depth',      0)
+        norm_valgus  = measurements.angles.get('norm_valgus',     0)
+        tempo        = measurements.angles.get('tempo',           0)
+        phase        = measurements.phase
+
+        # ── 1. Depth check (bottom phase only) ──────────────────────────
         if phase == 'bottom':
-             # Get base range and adjust for user
-            knee_base_range = self.get_angle_range('bottom', 'knee_angle')
-            knee_adjusted = self.adjust_threshold_for_user(
-                knee_base_range, 
-                getattr(self, 'calibrator', None)
+            if norm_depth < self.DEPTH_THRESH:
+                corrections.append(
+                    "Go deeper — hips should come down to knee level"
+                )
+
+        # ── 2. Hip hinge / thigh tilt (descent + bottom) ────────────────
+        # hip_knee_vert: 0° = thigh vertical (standing), ~80° = full squat
+        # At bottom, thigh should be at least 65° from vertical
+        if phase in ('bottom', 'descent'):
+            if hip_knee_vert < 60:
+                corrections.append(
+                    "Sit back more — push your hips backward as you go down"
+                )
+
+        # ── 3. Forward lean — ALL phases ────────────────────────────────
+        # Some lean is normal. Two-tier: warn vs error.
+        if back_angle > self.BACK_ANGLE_ERROR:
+            corrections.append(
+                f"Too much forward lean ({back_angle:.0f}°) — "
+                f"chest up, keep torso more upright"
             )
-        
-            # Check squat depth with calibration
-            if knee_angle:
-                if knee_angle < knee_adjusted[0]:
-                        corrections.append("Don't go too deep - maintain control")
-                elif knee_angle > knee_adjusted[1]:
-                        corrections.append(f"Squat deeper - knees should reach {int(knee_adjusted[0])}-{int(knee_adjusted[1])}°")
-        
-            # Hip angle check
-            hip_base_range = self.get_angle_range('bottom', 'hip_angle')
-            hip_adjusted = self.adjust_threshold_for_user(
-                    hip_base_range,
-                getattr(self, 'calibrator', None)
+        elif back_angle > self.BACK_ANGLE_WARN:
+            corrections.append(
+                f"Slight forward lean ({back_angle:.0f}°) — "
+                f"try to keep chest higher"
             )
-        
-            if hip_angle and not (hip_adjusted[0] <= hip_angle <= hip_adjusted[1]):
-                corrections.append("Adjust hip position - maintain proper depth")
-            # Check back angle
-            if back_angle and back_angle > 50:
-                corrections.append("Keep chest up - reduce forward lean")
-        
+
+        # ── 4. Knee valgus — descent, bottom, ascent ────────────────────
+        if phase != 'standing':
+            if norm_valgus > self.VALGUS_ERROR:
+                corrections.append(
+                    "Knees collapsing inward — push knees out firmly over your toes"
+                )
+            elif norm_valgus > self.VALGUS_WARN:
+                corrections.append(
+                    "Knees drifting slightly inward — focus on pushing them out"
+                )
+
+        # ── 5. Full lockout at top ───────────────────────────────────────
+        if phase == 'standing' and knee_angle < 155:
+            corrections.append(
+                "Stand up fully between reps — fully extend your legs"
+            )
+
+        # ── 6. Tempo (device-independent degrees/second) ─────────────────
+        if tempo > self.TEMPO_MAX_DEG_SEC:
+            corrections.append(
+                "Slow down — control the movement. "
+                "Take 2–3 seconds going down."
+            )
+
+        # ── Build result ─────────────────────────────────────────────────
         is_correct = len(corrections) == 0
-        severity = 'good' if is_correct else ('warning' if len(corrections) == 1 else 'error')
-        
+        severity   = (
+            'good'    if is_correct else
+            'warning' if len(corrections) == 1 else
+            'error'
+        )
+
         if is_correct:
-            messages.append("Excellent squat form!")
-        
+            if phase == 'bottom':
+                messages.append("Good depth! Drive through heels to stand up.")
+            elif phase == 'standing':
+                messages.append("Good — ready for next rep!")
+            elif phase == 'descent':
+                messages.append("Good descent — sit back and down.")
+            else:
+                messages.append("Good — drive up through the heels!")
+
         return FormFeedback(
             is_correct=is_correct,
             messages=messages,
             corrections=corrections,
             severity=severity
         )
-    def _compute_measurements_from_points(self, landmark_points, width, height):
-        from ..core.angle_calculator import AngleCalculator, calculate_knee_angle, calculate_hip_angle
-        try:
-            # Try left side first, fall back to right
-            shoulder = landmark_points.get('LEFT_SHOULDER') or landmark_points.get('RIGHT_SHOULDER')
-            hip = landmark_points.get('LEFT_HIP') or landmark_points.get('RIGHT_HIP')
-            knee = landmark_points.get('LEFT_KNEE') or landmark_points.get('RIGHT_KNEE')
-            ankle = landmark_points.get('LEFT_ANKLE') or landmark_points.get('RIGHT_ANKLE')
 
-            if not all([shoulder, hip, knee, ankle]):
+    def set_body_proportions(self, body_height_px: float, hip_width_px: float):
+        """
+        Called after calibration to give the exercise class
+        body proportion data for threshold normalization.
+        """
+        self._body_height_px = body_height_px
+        self._hip_width_px   = hip_width_px
+        logger.info(
+            f"Squat proportions set: height={body_height_px:.0f}px "
+            f"hip_width={hip_width_px:.0f}px"
+        )
+
+    def _compute_measurements_from_points(self, landmark_points, width, height):
+        try:
+            side  = self._get_best_side(landmark_points)
+            hip   = landmark_points.get(f'{side}_HIP')
+            knee  = landmark_points.get(f'{side}_KNEE')
+            ankle = landmark_points.get(f'{side}_ANKLE')
+
+            if not all([hip, knee, ankle]):
                 return None
 
             knee_angle = calculate_knee_angle(hip, knee, ankle)
-            hip_angle = calculate_hip_angle(shoulder, hip, knee)
-            back_angle = AngleCalculator.calculate_angle_from_vertical(shoulder, hip)
-            shin_angle = AngleCalculator.calculate_shin_angle(knee, ankle)
-
-            if None in [knee_angle, hip_angle, back_angle]:
+            if knee_angle is None:
                 return None
 
             angles = {
                 'knee_angle': knee_angle,
-                'hip_angle': hip_angle,
-                'back_angle': back_angle,
-                'shin_angle': shin_angle if shin_angle else 0
+                'hip_angle': 0.0, 'back_angle': 0.0,
+                'hip_knee_vert': 0.0, 'norm_depth': 0.0,
+                'norm_valgus': 0.0, 'tempo': 0.0
             }
-            from exercises.base_exercise import ExerciseMeasurements
-            temp = ExerciseMeasurements(angles=angles, alignments={}, distances={}, phase='', is_valid=True)
+            temp  = ExerciseMeasurements(
+                angles=angles, alignments={}, distances={},
+                phase='', is_valid=True
+            )
             phase = self.determine_phase(temp)
-            return ExerciseMeasurements(angles=angles, alignments={}, distances={}, phase=phase, is_valid=True)
+            return ExerciseMeasurements(
+                angles=angles, alignments={}, distances={},
+                phase=phase, is_valid=True
+            )
         except Exception as e:
             logger.error(f"Squat compute error: {e}")
-            return None    
-
-
+            return None
 
 class PushupExercise(BaseExercise):
     """Push-up exercise implementation"""

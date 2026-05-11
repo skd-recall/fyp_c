@@ -213,6 +213,12 @@ class PostureDetectionSystem:
             return False
     
         self.current_exercise = self.EXERCISE_MAP[exercise_name]()
+        if exercise_name == 'squat' and self.calibrator.is_calibrated:
+            bp = self.calibrator.body_proportions
+            if bp:
+                self.current_exercise.set_body_proportions(
+                    bp.total_height, bp.hip_width
+                )
     
         # Give exercise access to calibrator
         self.current_exercise.calibrator = self.calibrator

@@ -45,8 +45,8 @@ squat:
 
   rep_counting:
     down_threshold: 100  # Knee angle to register "down"
-    up_threshold: 165  # Knee angle to register "up"
-    min_rep_time: 1.0  # Minimum seconds per rep
+    up_threshold: 155  # Knee angle to register "up"
+    min_rep_time: 1.2  # Minimum seconds per rep
   
   form_checks:
     - name: "knee_depth"
