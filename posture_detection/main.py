@@ -330,6 +330,20 @@ class PostureDetectionSystem:
         self.is_running = True
         self.frame_stabilizer.reset()
         self.rep_counter.reset()
+        if self.current_exercise.exercise_name == 'squat':
+            self._show_camera_prompt(
+                "SQUAT SETUP",
+                [
+                    "For best accuracy, turn your body",
+                    "30-45 degrees to the side.",
+                    "",
+                    "Camera should see your full body",
+                    "from a slight side angle.",
+                    "",
+                    "Press SPACE to start when ready."
+                ]
+            )
+
         
         start_time = time.time()
         frame_count = 0
@@ -362,10 +376,22 @@ class PostureDetectionSystem:
                     smoothed_angle = self.frame_stabilizer.get_smoothed_angle(primary_angle_key)
                     
                     if smoothed_angle is not None:
-                        # Update rep counter
+                        # Replace raw angles with smoothed versions for validation
+                        smoothed_angles = {}
+                        for angle_name in measurements.angles:
+                            s = self.frame_stabilizer.get_smoothed_angle(angle_name)
+                            smoothed_angles[angle_name] = s if s is not None else measurements.angles[angle_name]
+                        measurements.angles.update(smoothed_angles)
+
+                        # Validate form FIRST (needed for rep counter)
                         form_feedback = self.current_exercise.validate_form(measurements)
                         form_score = self.current_exercise.calculate_form_score(measurements)
-                        rep_status = self.rep_counter.update(smoothed_angle, form_is_valid=form_feedback.is_correct)
+
+                        # Update rep counter with form validity
+                        rep_status = self.rep_counter.update(
+                            smoothed_angle,
+                            form_is_valid=form_feedback.is_correct
+                        )
                         
                         # Validate form
                         form_feedback = self.current_exercise.validate_form(measurements)
@@ -391,6 +417,7 @@ class PostureDetectionSystem:
                         measurements.angles,
                         self.current_exercise.exercise_name,
                         form_score
+                        phase=measurements.phase
                     )
                 else:
                     # Fallback to regular skeleton
@@ -440,45 +467,70 @@ class PostureDetectionSystem:
         height, width = frame.shape[:2]
         
         # ===== TOP CENTER: Feedback Message =====
-        if feedback_message:
-            # Split long messages into multiple lines
-            max_chars_per_line = 35
-            lines = []
+        if feedback_message and feedback_message.strip():
+            # Color of feedback box based on form
+            if form_score >= 85:
+                box_color  = (0, 180, 0)      # green
+                text_color = (255, 255, 255)
+            elif form_score >= 60:
+                box_color  = (0, 180, 180)    # yellow
+                text_color = (0, 0, 0)
+            else:
+                box_color  = (0, 0, 200)      # red
+                text_color = (255, 255, 255)
+
+            # Word-wrap the message
+            max_chars = 38
             words = feedback_message.split()
-            current_line = ""
-            
+            lines = []
+            current = ""
             for word in words:
-                if len(current_line) + len(word) + 1 <= max_chars_per_line:
-                    current_line += word + " "
+                if len(current) + len(word) + 1 <= max_chars:
+                    current = (current + " " + word).strip()
                 else:
-                    if current_line:
-                        lines.append(current_line.strip())
-                    current_line = word + " "
-            if current_line:
-                lines.append(current_line.strip())
-            
-            # Draw feedback at top center
-            y_start = 40
+                    if current:
+                        lines.append(current)
+                    current = word
+            if current:
+                lines.append(current)
+
+            font       = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.65
+            thickness  = 2
+            padding    = 10
+            line_h     = 28
+
+            # Measure widest line for box width
+            max_w = max(
+                cv2.getTextSize(l, font, font_scale, thickness)[0][0]
+                for l in lines
+            ) if lines else 0
+
+            box_h = len(lines) * line_h + padding * 2
+            box_w = max_w + padding * 2
+            box_x = (width - box_w) // 2
+            box_y = 10
+
+            # Draw colored background box
+            cv2.rectangle(
+                frame,
+                (box_x, box_y),
+                (box_x + box_w, box_y + box_h),
+                box_color, -1
+            )
+            cv2.rectangle(
+                frame,
+                (box_x, box_y),
+                (box_x + box_w, box_y + box_h),
+                (255, 255, 255), 1
+            )
+
+            # Draw each line of text
             for i, line in enumerate(lines):
-                # Calculate text width for centering
-                (text_width, text_height), _ = cv2.getTextSize(
-                    line, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2
-                )
-                x_centered = (width - text_width) // 2
-                
-                # Color based on form score
-                if form_score > 80:
-                    color = (0, 255, 0)  # Green - good
-                elif form_score > 60:
-                    color = (0, 255, 255)  # Yellow - warning
-                else:
-                    color = (0, 0, 255)  # Red - error
-                
-                self.pose_detector.draw_text(
-                    frame, line, (x_centered, y_start + i * 35),
-                    font_scale=0.7, color=color, thickness=2,
-                    background=True, background_color=(0, 0, 0)
-                )
+                (lw, lh), _ = cv2.getTextSize(line, font, font_scale, thickness)
+                tx = box_x + (box_w - lw) // 2
+                ty = box_y + padding + lh + i * line_h
+                cv2.putText(frame, line, (tx, ty), font, font_scale, text_color, thickness)
         
         # ===== BOTTOM CENTER: Rep Count & Stats =====
         bottom_y = height - 100
@@ -524,6 +576,54 @@ class PostureDetectionSystem:
         )
         
         return frame
+    
+    def _show_camera_prompt(self, title: str, lines: list):
+        """Show a fullscreen instruction prompt. User presses SPACE to continue."""
+        if not self.camera_manager.open():
+            return
+
+        while True:
+            ret, frame = self.camera_manager.read_frame()
+            if not ret:
+                continue
+
+            h, w = frame.shape[:2]
+
+            # Semi-transparent dark overlay
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
+
+            # Title
+            (tw, th), _ = cv2.getTextSize(
+                title, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2
+            )
+            cv2.putText(
+                frame, title,
+                ((w - tw) // 2, 80),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+                (0, 255, 255), 2
+            )
+
+            # Instruction lines
+            for i, line in enumerate(lines):
+                (lw, lh), _ = cv2.getTextSize(
+                    line, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 1
+                )
+                cv2.putText(
+                    frame, line,
+                    ((w - lw) // 2, 140 + i * 38),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                    (255, 255, 255), 1
+                )
+
+            cv2.imshow("Posture Detection", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord(' ') or key == ord('q'):
+                break
+
+        cv2.destroyAllWindows()
+        self.camera_manager.release()
 
 def main():
     """Main entry point"""

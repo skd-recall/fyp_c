@@ -246,7 +246,110 @@ class PoseDetector:
         except Exception as e:
             logger.error(f"Error drawing custom landmarks: {e}")
             return frame
-    
+        
+    def draw_color_coded_skeleton(
+        self,
+        frame: np.ndarray,
+        landmarks,
+        angles: dict,
+        exercise_name: str,
+        form_score: float,
+        phase: str = 'standing'
+    ) -> np.ndarray:
+        """
+        Draw skeleton with color coding:
+        - WHITE:  neutral / standing (not exercising yet)
+        - GREEN:  correct form during exercise
+        - YELLOW: slightly off form (1 correction)
+        - RED:    incorrect form (2+ corrections or critical error)
+
+        Joints are larger circles; connections are colored lines.
+        """
+        if landmarks is None:
+            return frame
+
+        try:
+            height, width = frame.shape[:2]
+
+            # --- Determine skeleton color based on form score and phase ---
+            if phase == 'standing' or phase == '' or phase is None:
+                # Neutral - white skeleton
+                line_color  = (255, 255, 255)  # white
+                joint_color = (255, 255, 255)
+            elif form_score >= 85:
+                # Great form - green
+                line_color  = (0, 220, 0)      # green
+                joint_color = (0, 255, 0)
+            elif form_score >= 60:
+                # Slightly off - yellow
+                line_color  = (0, 200, 200)    # yellow (BGR)
+                joint_color = (0, 220, 220)
+            else:
+                # Bad form - red
+                line_color  = (0, 0, 220)      # red
+                joint_color = (0, 0, 255)
+
+            # --- Connections to draw (body only, no face) ---
+            CONNECTIONS = [
+                # Torso
+                ('LEFT_SHOULDER',  'RIGHT_SHOULDER'),
+                ('LEFT_SHOULDER',  'LEFT_HIP'),
+                ('RIGHT_SHOULDER', 'RIGHT_HIP'),
+                ('LEFT_HIP',       'RIGHT_HIP'),
+                # Left arm
+                ('LEFT_SHOULDER',  'LEFT_ELBOW'),
+                ('LEFT_ELBOW',     'LEFT_WRIST'),
+                # Right arm
+                ('RIGHT_SHOULDER', 'RIGHT_ELBOW'),
+                ('RIGHT_ELBOW',    'RIGHT_WRIST'),
+                # Left leg
+                ('LEFT_HIP',       'LEFT_KNEE'),
+                ('LEFT_KNEE',      'LEFT_ANKLE'),
+                # Right leg
+                ('RIGHT_HIP',      'RIGHT_KNEE'),
+                ('RIGHT_KNEE',     'RIGHT_ANKLE'),
+            ]
+
+            # Key joints to highlight (larger circle)
+            KEY_JOINTS = {
+                'LEFT_SHOULDER', 'RIGHT_SHOULDER',
+                'LEFT_ELBOW',    'RIGHT_ELBOW',
+                'LEFT_HIP',      'RIGHT_HIP',
+                'LEFT_KNEE',     'RIGHT_KNEE',
+                'LEFT_ANKLE',    'RIGHT_ANKLE',
+                'LEFT_WRIST',    'RIGHT_WRIST',
+            }
+
+            lm = landmarks.landmark
+
+            def get_pt(name):
+                idx = LandmarkExtractor.LANDMARK_MAP.get(name)
+                if idx is None:
+                    return None
+                l = lm[idx.value]
+                if l.visibility < 0.4:
+                    return None
+                return (int(l.x * width), int(l.y * height))
+
+            # Draw connections
+            for a, b in CONNECTIONS:
+                pt1 = get_pt(a)
+                pt2 = get_pt(b)
+                if pt1 and pt2:
+                    cv2.line(frame, pt1, pt2, line_color, 3, cv2.LINE_AA)
+
+            # Draw joints
+            for name in KEY_JOINTS:
+                pt = get_pt(name)
+                if pt:
+                    radius = 8
+                    cv2.circle(frame, pt, radius, joint_color, -1, cv2.LINE_AA)
+                    cv2.circle(frame, pt, radius + 2, (0, 0, 0), 2)  # black outline
+
+        except Exception as e:
+            logger.error(f"Error drawing color coded skeleton: {e}")
+
+        return frame
     def calculate_fps(self, frame_count: int, start_time: float, current_time: float) -> float:
         """
         Calculate current FPS
@@ -263,101 +366,7 @@ class PoseDetector:
         if elapsed_time == 0:
             return 0.0
         return frame_count / elapsed_time
-    def draw_color_coded_skeleton(
-        self,
-        frame: np.ndarray,
-        landmarks,
-        angles: dict,
-        exercise_name: str,
-        form_score: float
-    ) -> np.ndarray:
-        """
-        Draw skeleton with color-coded joints based on form quality
-        Green = good angle, Yellow = acceptable, Red = bad angle
-        """
-        if landmarks is None:
-            return frame
-        
-        height, width = frame.shape[:2]
-        
-        # Define joints to check for each exercise
-        key_joints = {
-            'squat': ['LEFT_KNEE', 'LEFT_HIP'],
-            'shoulder_press': ['LEFT_ELBOW', 'LEFT_SHOULDER'],
-            'pushup': ['LEFT_ELBOW', 'LEFT_SHOULDER'],
-            'plank': ['LEFT_HIP'],
-            'bicep_curl': ['LEFT_ELBOW']
-        }
-        
-        important_joints = key_joints.get(exercise_name, [])
-        
-        # Draw connections
-        connections = [
-            (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.RIGHT_SHOULDER),
-            (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_HIP),
-            (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_HIP),
-            (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.RIGHT_HIP),
-            (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_ELBOW),
-            (mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.LEFT_WRIST),
-            (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_ELBOW),
-            (mp_pose.PoseLandmark.RIGHT_ELBOW, mp_pose.PoseLandmark.RIGHT_WRIST),
-            (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE),
-            (mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.LEFT_ANKLE),
-            (mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE),
-            (mp_pose.PoseLandmark.RIGHT_KNEE, mp_pose.PoseLandmark.RIGHT_ANKLE),
-        ]
-        
-        # Overall form color
-        if form_score > 80:
-            connection_color = (0, 255, 0)  # Green
-        elif form_score > 60:
-            connection_color = (0, 255, 255)  # Yellow
-        else:
-            connection_color = (0, 0, 255)  # Red
-        
-        # Draw connections
-        for connection in connections:
-            start_idx = connection[0].value
-            end_idx = connection[1].value
-            
-            if start_idx < len(landmarks.landmark) and end_idx < len(landmarks.landmark):
-                start = landmarks.landmark[start_idx]
-                end = landmarks.landmark[end_idx]
-                
-                if start.visibility > 0.5 and end.visibility > 0.5:
-                    start_point = (int(start.x * width), int(start.y * height))
-                    end_point = (int(end.x * width), int(end.y * height))
-                    
-                    cv2.line(frame, start_point, end_point, connection_color, 3)
-        
-        # Draw joints with specific colors
-        for idx, landmark in enumerate(landmarks.landmark):
-            if landmark.visibility < 0.5:
-                continue
-            
-            x = int(landmark.x * width)
-            y = int(landmark.y * height)
-            
-            # Determine joint color
-            landmark_name = None
-            for name, lm_idx in LandmarkExtractor.LANDMARK_MAP.items():
-                if lm_idx.value == idx:
-                    landmark_name = name
-                    break
-            
-            if landmark_name in important_joints:
-                # Key joint - color based on form
-                joint_color = connection_color
-                radius = 8
-            else:
-                # Regular joint
-                joint_color = (255, 255, 255)  # White
-                radius = 5
-            
-            cv2.circle(frame, (x, y), radius, joint_color, -1)
-            cv2.circle(frame, (x, y), radius + 2, (0, 0, 0), 2)  # Black outline
-        
-        return frame
+
     def draw_fps(
         self, 
         frame: np.ndarray, 
