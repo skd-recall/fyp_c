@@ -248,108 +248,130 @@ class PoseDetector:
             return frame
         
     def draw_color_coded_skeleton(
-        self,
-        frame: np.ndarray,
-        landmarks,
-        angles: dict,
-        exercise_name: str,
-        form_score: float,
-        phase: str = 'standing'
-    ) -> np.ndarray:
-        """
-        Draw skeleton with color coding:
-        - WHITE:  neutral / standing (not exercising yet)
-        - GREEN:  correct form during exercise
-        - YELLOW: slightly off form (1 correction)
-        - RED:    incorrect form (2+ corrections or critical error)
+            self,
+            frame: np.ndarray,
+            landmarks,
+            angles: dict,
+            exercise_name: str,
+            form_score: float,
+            phase: str = 'standing'
+        ) -> np.ndarray:
+            """
+            Draw skeleton with:
+            - Thinner lines (thickness 2)
+            - Joint nodes (circles) at every landmark
+            - Face landmarks visible (smaller nodes)
+            - Color: WHITE=neutral, GREEN=good, YELLOW=minor issue, RED=bad form
+            """
+            if landmarks is None:
+                return frame
 
-        Joints are larger circles; connections are colored lines.
-        """
-        if landmarks is None:
+            try:
+                height, width = frame.shape[:2]
+                lm = landmarks.landmark
+
+                # ── Determine color based on phase and form score ──────────
+                if phase in ('standing', '', None):
+                    line_color  = (220, 220, 220)   # light white
+                    joint_color = (255, 255, 255)
+                    face_color  = (180, 180, 180)
+                elif form_score >= 80:
+                    line_color  = (0, 210, 0)       # green
+                    joint_color = (0, 255, 0)
+                    face_color  = (0, 180, 0)
+                elif form_score >= 55:
+                    line_color  = (0, 200, 200)     # yellow (BGR)
+                    joint_color = (0, 220, 220)
+                    face_color  = (0, 160, 160)
+                else:
+                    line_color  = (0, 0, 210)       # red
+                    joint_color = (0, 0, 255)
+                    face_color  = (0, 0, 180)
+
+                # ── Body connections ───────────────────────────────────────
+                BODY_CONNECTIONS = [
+                    ('LEFT_SHOULDER',  'RIGHT_SHOULDER'),
+                    ('LEFT_SHOULDER',  'LEFT_HIP'),
+                    ('RIGHT_SHOULDER', 'RIGHT_HIP'),
+                    ('LEFT_HIP',       'RIGHT_HIP'),
+                    ('LEFT_SHOULDER',  'LEFT_ELBOW'),
+                    ('LEFT_ELBOW',     'LEFT_WRIST'),
+                    ('RIGHT_SHOULDER', 'RIGHT_ELBOW'),
+                    ('RIGHT_ELBOW',    'RIGHT_WRIST'),
+                    ('LEFT_HIP',       'LEFT_KNEE'),
+                    ('LEFT_KNEE',      'LEFT_ANKLE'),
+                    ('RIGHT_HIP',      'RIGHT_KNEE'),
+                    ('RIGHT_KNEE',     'RIGHT_ANKLE'),
+                    ('LEFT_ANKLE',     'LEFT_FOOT_INDEX'),
+                    ('RIGHT_ANKLE',    'RIGHT_FOOT_INDEX'),
+                ]
+
+                # ── Face connections (drawn in face_color, thinner) ────────
+                FACE_CONNECTIONS = [
+                    ('LEFT_EYE',  'RIGHT_EYE'),
+                    ('LEFT_EAR',  'LEFT_EYE'),
+                    ('RIGHT_EAR', 'RIGHT_EYE'),
+                    ('NOSE',      'LEFT_EYE'),
+                    ('NOSE',      'RIGHT_EYE'),
+                    ('MOUTH_LEFT','MOUTH_RIGHT'),
+                ]
+
+                # ── Face landmark nodes ────────────────────────────────────
+                FACE_LANDMARKS = [
+                    'NOSE', 'LEFT_EYE', 'RIGHT_EYE',
+                    'LEFT_EAR', 'RIGHT_EAR',
+                    'MOUTH_LEFT', 'MOUTH_RIGHT',
+                ]
+
+                # ── Body joint nodes (larger circles) ─────────────────────
+                BODY_JOINTS = {
+                    'LEFT_SHOULDER', 'RIGHT_SHOULDER',
+                    'LEFT_ELBOW',    'RIGHT_ELBOW',
+                    'LEFT_WRIST',    'RIGHT_WRIST',
+                    'LEFT_HIP',      'RIGHT_HIP',
+                    'LEFT_KNEE',     'RIGHT_KNEE',
+                    'LEFT_ANKLE',    'RIGHT_ANKLE',
+                }
+
+                def get_pt(name):
+                    entry = LandmarkExtractor.LANDMARK_MAP.get(name)
+                    if entry is None:
+                        return None
+                    l = lm[entry.value]
+                    if l.visibility < 0.4:
+                        return None
+                    return (int(l.x * width), int(l.y * height))
+
+                # Draw face connections (thin, subtle)
+                for a, b in FACE_CONNECTIONS:
+                    pt1, pt2 = get_pt(a), get_pt(b)
+                    if pt1 and pt2:
+                        cv2.line(frame, pt1, pt2, face_color, 1, cv2.LINE_AA)
+
+                # Draw body connections (main skeleton lines, thickness 2)
+                for a, b in BODY_CONNECTIONS:
+                    pt1, pt2 = get_pt(a), get_pt(b)
+                    if pt1 and pt2:
+                        cv2.line(frame, pt1, pt2, line_color, 2, cv2.LINE_AA)
+
+                # Draw face landmark nodes (small)
+                for name in FACE_LANDMARKS:
+                    pt = get_pt(name)
+                    if pt:
+                        cv2.circle(frame, pt, 3, face_color, -1, cv2.LINE_AA)
+                        cv2.circle(frame, pt, 4, (0, 0, 0), 1)
+
+                # Draw body joint nodes (larger, with black outline)
+                for name in BODY_JOINTS:
+                    pt = get_pt(name)
+                    if pt:
+                        cv2.circle(frame, pt, 7, joint_color, -1, cv2.LINE_AA)
+                        cv2.circle(frame, pt, 9, (0, 0, 0), 2)
+
+            except Exception as e:
+                logger.error(f"Skeleton draw error: {e}")
+
             return frame
-
-        try:
-            height, width = frame.shape[:2]
-
-            # --- Determine skeleton color based on form score and phase ---
-            if phase == 'standing' or phase == '' or phase is None:
-                # Neutral - white skeleton
-                line_color  = (255, 255, 255)  # white
-                joint_color = (255, 255, 255)
-            elif form_score >= 85:
-                # Great form - green
-                line_color  = (0, 220, 0)      # green
-                joint_color = (0, 255, 0)
-            elif form_score >= 60:
-                # Slightly off - yellow
-                line_color  = (0, 200, 200)    # yellow (BGR)
-                joint_color = (0, 220, 220)
-            else:
-                # Bad form - red
-                line_color  = (0, 0, 220)      # red
-                joint_color = (0, 0, 255)
-
-            # --- Connections to draw (body only, no face) ---
-            CONNECTIONS = [
-                # Torso
-                ('LEFT_SHOULDER',  'RIGHT_SHOULDER'),
-                ('LEFT_SHOULDER',  'LEFT_HIP'),
-                ('RIGHT_SHOULDER', 'RIGHT_HIP'),
-                ('LEFT_HIP',       'RIGHT_HIP'),
-                # Left arm
-                ('LEFT_SHOULDER',  'LEFT_ELBOW'),
-                ('LEFT_ELBOW',     'LEFT_WRIST'),
-                # Right arm
-                ('RIGHT_SHOULDER', 'RIGHT_ELBOW'),
-                ('RIGHT_ELBOW',    'RIGHT_WRIST'),
-                # Left leg
-                ('LEFT_HIP',       'LEFT_KNEE'),
-                ('LEFT_KNEE',      'LEFT_ANKLE'),
-                # Right leg
-                ('RIGHT_HIP',      'RIGHT_KNEE'),
-                ('RIGHT_KNEE',     'RIGHT_ANKLE'),
-            ]
-
-            # Key joints to highlight (larger circle)
-            KEY_JOINTS = {
-                'LEFT_SHOULDER', 'RIGHT_SHOULDER',
-                'LEFT_ELBOW',    'RIGHT_ELBOW',
-                'LEFT_HIP',      'RIGHT_HIP',
-                'LEFT_KNEE',     'RIGHT_KNEE',
-                'LEFT_ANKLE',    'RIGHT_ANKLE',
-                'LEFT_WRIST',    'RIGHT_WRIST',
-            }
-
-            lm = landmarks.landmark
-
-            def get_pt(name):
-                idx = LandmarkExtractor.LANDMARK_MAP.get(name)
-                if idx is None:
-                    return None
-                l = lm[idx.value]
-                if l.visibility < 0.4:
-                    return None
-                return (int(l.x * width), int(l.y * height))
-
-            # Draw connections
-            for a, b in CONNECTIONS:
-                pt1 = get_pt(a)
-                pt2 = get_pt(b)
-                if pt1 and pt2:
-                    cv2.line(frame, pt1, pt2, line_color, 3, cv2.LINE_AA)
-
-            # Draw joints
-            for name in KEY_JOINTS:
-                pt = get_pt(name)
-                if pt:
-                    radius = 8
-                    cv2.circle(frame, pt, radius, joint_color, -1, cv2.LINE_AA)
-                    cv2.circle(frame, pt, radius + 2, (0, 0, 0), 2)  # black outline
-
-        except Exception as e:
-            logger.error(f"Error drawing color coded skeleton: {e}")
-
-        return frame
     def calculate_fps(self, frame_count: int, start_time: float, current_time: float) -> float:
         """
         Calculate current FPS

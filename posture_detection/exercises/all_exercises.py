@@ -265,94 +265,118 @@ class SquatExercise(BaseExercise):
         return 'descent' if self.direction == 'down' else 'ascent'
 
     def validate_form(self, measurements: ExerciseMeasurements) -> FormFeedback:
-        corrections = []
-        messages    = []
+            corrections = []
+            messages    = []
 
-        knee_angle   = measurements.angles.get('knee_angle',    170)
-        back_angle   = measurements.angles.get('back_angle',      0)
-        hip_knee_vert = measurements.angles.get('hip_knee_vert',  0)
-        norm_depth   = measurements.angles.get('norm_depth',      0)
-        norm_valgus  = measurements.angles.get('norm_valgus',     0)
-        tempo        = measurements.angles.get('tempo',           0)
-        phase        = measurements.phase
+            knee_angle    = measurements.angles.get('knee_angle',    170)
+            back_angle    = measurements.angles.get('back_angle',      0)
+            hip_knee_vert = measurements.angles.get('hip_knee_vert',   0)
+            norm_depth    = measurements.angles.get('norm_depth',      0)
+            norm_valgus   = measurements.angles.get('norm_valgus',     0)
+            tempo         = measurements.angles.get('tempo',           0)
+            phase         = measurements.phase
 
-        # ── 1. Depth check (bottom phase only) ──────────────────────────
-        if phase == 'bottom':
-            if norm_depth < self.DEPTH_THRESH:
-                corrections.append(
-                    "Go deeper — hips should come down to knee level"
-                )
-
-        # ── 2. Hip hinge / thigh tilt (descent + bottom) ────────────────
-        # hip_knee_vert: 0° = thigh vertical (standing), ~80° = full squat
-        # At bottom, thigh should be at least 65° from vertical
-        if phase in ('bottom', 'descent'):
-            if hip_knee_vert < 60:
-                corrections.append(
-                    "Sit back more — push your hips backward as you go down"
-                )
-
-        # ── 3. Forward lean — ALL phases ────────────────────────────────
-        # Some lean is normal. Two-tier: warn vs error.
-        if back_angle > self.BACK_ANGLE_ERROR:
-            corrections.append(
-                f"Too much forward lean ({back_angle:.0f}°) — "
-                f"chest up, keep torso more upright"
-            )
-        elif back_angle > self.BACK_ANGLE_WARN:
-            corrections.append(
-                f"Slight forward lean ({back_angle:.0f}°) — "
-                f"try to keep chest higher"
-            )
-
-        # ── 4. Knee valgus — descent, bottom, ascent ────────────────────
-        if phase != 'standing':
-            if norm_valgus > self.VALGUS_ERROR:
-                corrections.append(
-                    "Knees collapsing inward — push knees out firmly over your toes"
-                )
-            elif norm_valgus > self.VALGUS_WARN:
-                corrections.append(
-                    "Knees drifting slightly inward — focus on pushing them out"
-                )
-
-        # ── 5. Full lockout at top ───────────────────────────────────────
-        if phase == 'standing' and knee_angle < 155:
-            corrections.append(
-                "Stand up fully between reps — fully extend your legs"
-            )
-
-        # ── 6. Tempo (device-independent degrees/second) ─────────────────
-        if tempo > self.TEMPO_MAX_DEG_SEC:
-            corrections.append(
-                "Slow down — control the movement. "
-                "Take 2–3 seconds going down."
-            )
-
-        # ── Build result ─────────────────────────────────────────────────
-        is_correct = len(corrections) == 0
-        severity   = (
-            'good'    if is_correct else
-            'warning' if len(corrections) == 1 else
-            'error'
-        )
-
-        if is_correct:
+            # ── 1. Depth check — BOTTOM ONLY ────────────────────────────────
+            # Only check depth when fully at bottom, not during descent
             if phase == 'bottom':
-                messages.append("Good depth! Drive through heels to stand up.")
-            elif phase == 'standing':
-                messages.append("Good — ready for next rep!")
-            elif phase == 'descent':
-                messages.append("Good descent — sit back and down.")
-            else:
-                messages.append("Good — drive up through the heels!")
+                if norm_depth < self.DEPTH_THRESH:
+                    corrections.append(
+                        "Go a little deeper — try to bring hips to knee level"
+                    )
 
-        return FormFeedback(
-            is_correct=is_correct,
-            messages=messages,
-            corrections=corrections,
-            severity=severity
-        )
+            # ── 2. Hip hinge — BOTTOM ONLY ──────────────────────────────────
+            # Do NOT check during descent — thigh starts vertical and that is correct
+            # Only flag at bottom if the person has not hinged enough
+            if phase == 'bottom':
+                if hip_knee_vert < 55:
+                    corrections.append(
+                        "Sit back more — push hips backward as you squat"
+                    )
+
+            # ── 3. Forward lean — phase-aware thresholds ─────────────────────
+            # During STANDING: flag any lean (person should be upright)
+            # During DESCENT: only flag severe lean (some is natural early on)
+            # During BOTTOM: standard thresholds apply
+            # During ASCENT: only flag severe (hips shooting back is common)
+            if phase == 'standing':
+                if back_angle > 20:
+                    corrections.append(
+                        f"Stand up straight — reduce forward lean ({back_angle:.0f}°)"
+                    )
+            elif phase == 'descent':
+                # Very lenient during descent — only flag truly excessive lean
+                if back_angle > self.BACK_ANGLE_ERROR + 15:   # 75° threshold
+                    corrections.append(
+                        f"Too much forward lean while going down ({back_angle:.0f}°) — "
+                        f"chest up"
+                    )
+            elif phase == 'bottom':
+                if back_angle > self.BACK_ANGLE_ERROR:         # 60°
+                    corrections.append(
+                        f"Excessive forward lean at bottom ({back_angle:.0f}°) — "
+                        f"chest up, keep torso more upright"
+                    )
+                elif back_angle > self.BACK_ANGLE_WARN:        # 45°
+                    corrections.append(
+                        f"Slight forward lean ({back_angle:.0f}°) — "
+                        f"try to keep chest higher"
+                    )
+            elif phase == 'ascent':
+                # Flag hips shooting back during ascent
+                if back_angle > self.BACK_ANGLE_ERROR + 10:   # 70°
+                    corrections.append(
+                        f"Hips shooting back on the way up ({back_angle:.0f}°) — "
+                        f"drive chest up as you stand"
+                    )
+
+            # ── 4. Knee valgus — DESCENT, BOTTOM, ASCENT only ───────────────
+            # Never check when standing — natural variation at rest
+            if phase in ('descent', 'bottom', 'ascent'):
+                if norm_valgus > self.VALGUS_ERROR:
+                    corrections.append(
+                        "Knees collapsing inward — push knees out over your toes"
+                    )
+                elif norm_valgus > self.VALGUS_WARN:
+                    corrections.append(
+                        "Knees drifting slightly inward — push them out"
+                    )
+
+            # ── 5. Full lockout — STANDING only ──────────────────────────────
+            if phase == 'standing' and knee_angle < 150:
+                corrections.append(
+                    "Stand up fully between reps — extend your legs completely"
+                )
+
+            # ── 6. Tempo ─────────────────────────────────────────────────────
+            if tempo > self.TEMPO_MAX_DEG_SEC:
+                corrections.append(
+                    "Slow down — take 2 to 3 seconds going down"
+                )
+
+            # ── Result ───────────────────────────────────────────────────────
+            is_correct = len(corrections) == 0
+            severity   = (
+                'good'    if is_correct else
+                'warning' if len(corrections) == 1 else
+                'error'
+            )
+
+            if is_correct:
+                if phase == 'bottom':
+                    messages.append("Good depth! Drive through heels to stand up.")
+                elif phase == 'standing':
+                    messages.append("Good — ready for next rep!")
+                elif phase == 'descent':
+                    messages.append("Good descent — sit back and down.")
+                else:
+                    messages.append("Good — drive up through your heels!")
+
+            return FormFeedback(
+                is_correct=is_correct,
+                messages=messages,
+                corrections=corrections,
+                severity=severity
+            )
 
     def set_body_proportions(self, body_height_px: float, hip_width_px: float):
         """
@@ -400,133 +424,403 @@ class SquatExercise(BaseExercise):
             return None
 
 class PushupExercise(BaseExercise):
-    """Push-up exercise implementation"""
-    
+    """
+    Push-up Exercise — requires SIDE VIEW camera.
+
+    Signals (priority order):
+    1. Elbow angle              - primary rep signal
+    2. Direction tracking       - solves up/down phase ambiguity
+    3. Confidence filtering     - rejects low-visibility frames silently
+    4. Body sag vs pike         - two separate checks, distinct feedback
+    5. Elbow flare              - injury risk detection
+    6. Shoulder depth           - catches partial reps
+    7. Tempo                    - device-independent (degrees/second)
+    8. Temporal persistence     - corrections only after 0.4s of bad form
+    """
+
+    # ── Rep thresholds ────────────────────────────────────────────────────
+    UP_THRESH          = 155
+    DOWN_THRESH        =  85
+    DIRECTION_DEADBAND =   2.0
+
+    # ── Body alignment ────────────────────────────────────────────────────
+    SAG_WARN           =  12
+    SAG_ERROR          =  20
+    PIKE_WARN          =  12
+    PIKE_ERROR         =  20
+
+    # ── Elbow flare ───────────────────────────────────────────────────────
+    FLARE_WARN         =  55
+    FLARE_ERROR        =  70
+
+    # ── Shoulder depth ────────────────────────────────────────────────────
+    SHOULDER_DEPTH_TOL =  10   # pixels
+
+    # ── Tempo ─────────────────────────────────────────────────────────────
+    TEMPO_MAX          = 130.0  # degrees/second
+
+    # ── Confidence filtering ──────────────────────────────────────────────
+    MIN_LANDMARK_VISIBILITY = 0.5
+
+    # ── Temporal persistence (seconds bad form must persist before flagging)
+    CORRECTION_PERSIST_SEC  = 0.4
+
     def __init__(self):
         super().__init__('pushup')
-    
-    def extract_measurements(self, landmarks, image_width: int, image_height: int) -> Optional[ExerciseMeasurements]:
-        result = self.extract_measurements_both_sides(landmarks, image_width, image_height)
-        if result:
-            return result
+
+        # Direction tracking
+        self.prev_elbow_angle = None
+        self.direction        = 'down'
+        self._seen_up         = False
+
+        # Tempo tracking
+        self._last_timestamp  = None
+        self._last_angle      = None
+
+        # Body proportion cache
+        self._body_height_px  = None
+
+        # Temporal persistence: track when each issue first appeared
+        # key = issue name, value = timestamp when it first appeared
+        self._issue_first_seen: dict = {}
+
+    # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _get_best_side(self, pts: dict) -> str:
+        lv = sum(pts[n].visibility for n in
+                 ['LEFT_SHOULDER', 'LEFT_ELBOW', 'LEFT_WRIST',
+                  'LEFT_HIP', 'LEFT_ANKLE'] if n in pts)
+        rv = sum(pts[n].visibility for n in
+                 ['RIGHT_SHOULDER', 'RIGHT_ELBOW', 'RIGHT_WRIST',
+                  'RIGHT_HIP', 'RIGHT_ANKLE'] if n in pts)
+        return 'LEFT' if lv >= rv else 'RIGHT'
+
+    def _check_landmark_confidence(self, pts: dict, side: str) -> bool:
+        """
+        Reject frame if any key landmark on chosen side is below threshold.
+        Returns True if frame is usable, False if it should be skipped.
+        """
+        key_landmarks = [
+            f'{side}_SHOULDER', f'{side}_ELBOW', f'{side}_WRIST'
+        ]
+        for name in key_landmarks:
+            pt = pts.get(name)
+            if pt is None or pt.visibility < self.MIN_LANDMARK_VISIBILITY:
+                logger.debug(f"Low confidence landmark rejected: {name}")
+                return False
+        return True
+
+    def _update_direction(self, elbow_angle: float) -> None:
+        if self.prev_elbow_angle is not None:
+            delta = elbow_angle - self.prev_elbow_angle
+            if delta < -self.DIRECTION_DEADBAND:
+                self.direction = 'down'
+            elif delta > self.DIRECTION_DEADBAND:
+                self.direction = 'up'
+        self.prev_elbow_angle = elbow_angle
+
+    def _calc_tempo(self, elbow_angle: float, timestamp: float) -> float:
+        velocity = 0.0
+        if self._last_timestamp is not None and self._last_angle is not None:
+            dt = timestamp - self._last_timestamp
+            if dt > 0.001:
+                velocity = abs(elbow_angle - self._last_angle) / dt
+        self._last_timestamp = timestamp
+        self._last_angle     = elbow_angle
+        return velocity
+
+    def _check_sag_pike(self, shoulder, hip, ankle) -> tuple:
+        """
+        Measure hip deviation from the shoulder-ankle straight line.
+        Returns (sag_deg, pike_deg) — only one will be non-zero.
+        sag  = hip drops below the line (weak core)
+        pike = hip rises above the line (compensating)
+        """
+        if not all([shoulder, hip, ankle]):
+            return 0.0, 0.0
+
+        line_dx  = ankle.x - shoulder.x
+        line_dy  = ankle.y - shoulder.y
+        line_len = ((line_dx ** 2) + (line_dy ** 2)) ** 0.5
+
+        if line_len < 1:
+            return 0.0, 0.0
+
+        cross       = (line_dx * (shoulder.y - hip.y)) - (line_dy * (shoulder.x - hip.x))
+        perp_dist   = cross / line_len
+        body_h      = self._body_height_px or line_len
+        deviation   = (perp_dist / body_h) * 90.0
+
+        return (deviation, 0.0) if deviation > 0 else (0.0, abs(deviation))
+
+    def _is_persistent(self, issue_key: str, is_present: bool, now: float) -> bool:
+        """
+        Returns True only if the issue has been continuously present
+        for at least CORRECTION_PERSIST_SEC seconds.
+        Clears the timer when the issue disappears.
+        """
+        if is_present:
+            if issue_key not in self._issue_first_seen:
+                self._issue_first_seen[issue_key] = now
+            return (now - self._issue_first_seen[issue_key]) >= self.CORRECTION_PERSIST_SEC
+        else:
+            # Issue gone — reset its timer
+            self._issue_first_seen.pop(issue_key, None)
+            return False
+
+    # ── Core methods ──────────────────────────────────────────────────────
+
+    def extract_measurements(
+        self,
+        landmarks,
+        image_width: int,
+        image_height: int
+    ) -> Optional[ExerciseMeasurements]:
+
         landmark_points = self.extract_landmarks(landmarks, image_width, image_height)
         if landmark_points is None:
             return None
-        
+
+        import time
+        timestamp = time.time()
+
         try:
-            shoulder = landmark_points['LEFT_SHOULDER']
-            elbow = landmark_points['LEFT_ELBOW']
-            wrist = landmark_points['LEFT_WRIST']
-            hip = landmark_points['LEFT_HIP']
-            ankle = landmark_points['LEFT_ANKLE']
-            
-            elbow_angle = calculate_elbow_angle(shoulder, elbow, wrist)
-            body_alignment = AngleCalculator.calculate_body_alignment(shoulder, hip, ankle)
-            
-            if None in [elbow_angle, body_alignment]:
+            side = self._get_best_side(landmark_points)
+            opp  = 'RIGHT' if side == 'LEFT' else 'LEFT'
+
+            # ── Confidence filter: reject bad frames early ─────────────
+            if not self._check_landmark_confidence(landmark_points, side):
+                return None   # frame silently skipped
+
+            shoulder = landmark_points.get(f'{side}_SHOULDER')
+            elbow    = landmark_points.get(f'{side}_ELBOW')
+            wrist    = landmark_points.get(f'{side}_WRIST')
+            hip      = (landmark_points.get(f'{side}_HIP') or
+                        landmark_points.get(f'{opp}_HIP'))
+            ankle    = (landmark_points.get(f'{side}_ANKLE') or
+                        landmark_points.get(f'{opp}_ANKLE'))
+
+            if not all([shoulder, elbow, wrist]):
                 return None
-            
+
+            # ── 1. Primary elbow angle ─────────────────────────────────
+            elbow_angle = calculate_elbow_angle(shoulder, elbow, wrist)
+            if elbow_angle is None:
+                return None
+
+            # ── 2. Body sag vs pike ────────────────────────────────────
+            sag_deg, pike_deg = (0.0, 0.0)
+            if hip and ankle:
+                sag_deg, pike_deg = self._check_sag_pike(shoulder, hip, ankle)
+
+            # ── 3. Elbow flare ─────────────────────────────────────────
+            elbow_flare = 0.0
+            if hip:
+                elbow_flare = (
+                    AngleCalculator.calculate_elbow_to_body_angle(
+                        shoulder, elbow, hip
+                    ) or 0.0
+                )
+
+            # ── 4. Shoulder depth ──────────────────────────────────────
+            shoulder_depth_ok = True
+            if elbow_angle < self.DOWN_THRESH + 15:
+                shoulder_depth_ok = (
+                    shoulder.y >= elbow.y - self.SHOULDER_DEPTH_TOL
+                )
+
+            # ── 5. Tempo ───────────────────────────────────────────────
+            tempo = self._calc_tempo(elbow_angle, timestamp)
+
+            # ── 6. Direction ───────────────────────────────────────────
+            self._update_direction(elbow_angle)
+
+            # Cache body height for sag/pike normalization
+            if self._body_height_px is None and ankle:
+                self._body_height_px = abs(ankle.y - shoulder.y)
+
             angles = {
-                'elbow_angle': elbow_angle,
-                'body_alignment': body_alignment
+                'elbow_angle':       elbow_angle,
+                'sag_deg':           sag_deg,
+                'pike_deg':          pike_deg,
+                'elbow_flare':       elbow_flare,
+                'shoulder_depth_ok': 1.0 if shoulder_depth_ok else 0.0,
+                'tempo':             tempo,
+                'timestamp':         timestamp,
             }
-            
-            phase = self.determine_phase(ExerciseMeasurements(
-                angles=angles, alignments={}, distances={}, phase='', is_valid=True
-            ))
-            
+
+            phase = self.determine_phase(
+                ExerciseMeasurements(
+                    angles=angles, alignments={},
+                    distances={}, phase='', is_valid=True
+                )
+            )
+
             return ExerciseMeasurements(
                 angles=angles,
-                alignments={'body': body_alignment},
+                alignments={'sag': sag_deg, 'pike': pike_deg},
                 distances={},
                 phase=phase,
                 is_valid=True
             )
+
         except Exception as e:
-            logger.error(f"Error extracting pushup measurements: {e}")
+            logger.error(f"Pushup extract error: {e}")
             return None
-    
+
     def determine_phase(self, measurements: ExerciseMeasurements) -> str:
-        elbow_angle = measurements.angles.get('elbow_angle', 180)
-        
-        if elbow_angle >= 155:
+        elbow_angle = measurements.angles.get('elbow_angle', 170)
+
+        if elbow_angle >= self.UP_THRESH:
+            self._seen_up = True
+
+        if not self._seen_up:
             return 'up'
-        elif elbow_angle >= 90:
-            return 'descent'
-        elif elbow_angle >= 65:
+
+        if elbow_angle >= self.UP_THRESH:
+            return 'up'
+        if elbow_angle <= self.DOWN_THRESH:
             return 'down'
-        else:
-            return 'ascent'
-    
+
+        return 'descent' if self.direction == 'down' else 'ascent'
+
     def validate_form(self, measurements: ExerciseMeasurements) -> FormFeedback:
-        messages = []
         corrections = []
-    
-        elbow_angle = measurements.angles.get('elbow_angle')
-        body_alignment = measurements.alignments.get('body')
-    
-        phase = measurements.phase
-    
-        if phase == 'down':
-        # Adjust elbow range based on user calibration
-            elbow_base_range = self.get_angle_range('down', 'elbow_angle')
-            elbow_adjusted = self.adjust_threshold_for_user(
-                elbow_base_range,
-                getattr(self, 'calibrator', None)
+        messages    = []
+
+        elbow_angle       = measurements.angles.get('elbow_angle',       170)
+        sag_deg           = measurements.angles.get('sag_deg',             0)
+        pike_deg          = measurements.angles.get('pike_deg',            0)
+        elbow_flare       = measurements.angles.get('elbow_flare',         0)
+        shoulder_depth_ok = measurements.angles.get('shoulder_depth_ok',   1)
+        tempo             = measurements.angles.get('tempo',               0)
+        now               = measurements.angles.get('timestamp', 0)
+        phase             = measurements.phase
+
+        # ── 1. Body SAG — persistent check ──────────────────────────────
+        if self._is_persistent('sag_error', sag_deg > self.SAG_ERROR, now):
+            corrections.append(
+                f"Hips sagging badly — squeeze core and glutes "
+                f"to keep body straight ({sag_deg:.0f}°)"
             )
-        
-            if elbow_angle:
-                if elbow_angle < elbow_adjusted[0]:
-                    corrections.append("Don't go too low - maintain form")
-                elif elbow_angle > elbow_adjusted[1]:
-                    corrections.append(f"Go lower - elbows should reach {int(elbow_adjusted[0])}-{int(elbow_adjusted[1])}°")
-        
-        if body_alignment and body_alignment > 15:
-            if body_alignment > 20:
-                corrections.append("Keep body straight - no sagging or piking")
-            else:
-                corrections.append("Minor body alignment issue")
-        
+        elif self._is_persistent('sag_warn', sag_deg > self.SAG_WARN, now):
+            corrections.append(
+                f"Hips dropping slightly — tighten your core "
+                f"({sag_deg:.0f}°)"
+            )
+
+        # ── 2. Body PIKE — persistent check ─────────────────────────────
+        if self._is_persistent('pike_error', pike_deg > self.PIKE_ERROR, now):
+            corrections.append(
+                f"Hips too high — lower them to form a straight line "
+                f"shoulder to ankle ({pike_deg:.0f}°)"
+            )
+        elif self._is_persistent('pike_warn', pike_deg > self.PIKE_WARN, now):
+            corrections.append(
+                f"Hips slightly elevated — bring them down a little "
+                f"({pike_deg:.0f}°)"
+            )
+
+        # ── 3. Elbow flare — persistent check ───────────────────────────
+        if self._is_persistent('flare_error', elbow_flare > self.FLARE_ERROR, now):
+            corrections.append(
+                f"Elbows flaring too wide ({elbow_flare:.0f}°) — "
+                f"tuck elbows closer to protect shoulders"
+            )
+        elif self._is_persistent('flare_warn', elbow_flare > self.FLARE_WARN, now):
+            corrections.append(
+                f"Elbows slightly wide ({elbow_flare:.0f}°) — "
+                f"try tucking them a little closer"
+            )
+
+        # ── 4. Depth — at bottom position only ──────────────────────────
+        if phase == 'down':
+            if elbow_angle > self.DOWN_THRESH + 10:
+                corrections.append(
+                    f"Go lower — chest closer to ground "
+                    f"(elbow: {elbow_angle:.0f}°, target: below {self.DOWN_THRESH}°)"
+                )
+            if shoulder_depth_ok < 1.0:
+                corrections.append(
+                    "Go lower — shoulder should reach elbow level at the bottom"
+                )
+
+        # ── 5. Full lockout — at top only ────────────────────────────────
+        if phase == 'up' and elbow_angle < self.UP_THRESH - 10:
+            corrections.append(
+                f"Fully extend arms at the top "
+                f"(elbow: {elbow_angle:.0f}°, target: above {self.UP_THRESH}°)"
+            )
+
+        # ── 6. Tempo ─────────────────────────────────────────────────────
+        if self._is_persistent('tempo', tempo > self.TEMPO_MAX, now):
+            corrections.append(
+                "Slow down — control the movement. "
+                "2 seconds down, 1 second up."
+            )
+
+        # ── Build result ──────────────────────────────────────────────────
         is_correct = len(corrections) == 0
-        severity = 'good' if is_correct else 'warning'
-        
+        severity   = (
+            'good'    if is_correct else
+            'warning' if len(corrections) == 1 else
+            'error'
+        )
+
         if is_correct:
-            messages.append("Perfect push-up form!")
-        
+            if phase == 'down':
+                messages.append("Good depth! Push up through your palms.")
+            elif phase == 'up':
+                messages.append("Arms extended — ready for next rep!")
+            elif phase == 'descent':
+                messages.append("Good descent — controlled and steady.")
+            else:
+                messages.append("Good — keep pushing!")
+
         return FormFeedback(
             is_correct=is_correct,
             messages=messages,
             corrections=corrections,
             severity=severity
         )
-    def _compute_measurements_from_points(self, landmark_points, width, height):
-        from ..core.angle_calculator import AngleCalculator, calculate_elbow_angle
-        try:
-            shoulder = landmark_points.get('LEFT_SHOULDER') or landmark_points.get('RIGHT_SHOULDER')
-            elbow = landmark_points.get('LEFT_ELBOW') or landmark_points.get('RIGHT_ELBOW')
-            wrist = landmark_points.get('LEFT_WRIST') or landmark_points.get('RIGHT_WRIST')
-            hip = landmark_points.get('LEFT_HIP') or landmark_points.get('RIGHT_HIP')
-            ankle = landmark_points.get('LEFT_ANKLE') or landmark_points.get('RIGHT_ANKLE')
 
-            if not all([shoulder, elbow, wrist, hip, ankle]):
+    def set_body_proportions(self, body_height_px: float):
+        self._body_height_px = body_height_px
+        logger.info(f"Pushup body height set: {body_height_px:.0f}px")
+
+    def _compute_measurements_from_points(self, landmark_points, width, height):
+        try:
+            side     = self._get_best_side(landmark_points)
+            shoulder = landmark_points.get(f'{side}_SHOULDER')
+            elbow    = landmark_points.get(f'{side}_ELBOW')
+            wrist    = landmark_points.get(f'{side}_WRIST')
+
+            if not all([shoulder, elbow, wrist]):
                 return None
 
             elbow_angle = calculate_elbow_angle(shoulder, elbow, wrist)
-            body_alignment = AngleCalculator.calculate_body_alignment(shoulder, hip, ankle)
-
-            if None in [elbow_angle, body_alignment]:
+            if elbow_angle is None:
                 return None
 
-            angles = {'elbow_angle': elbow_angle, 'body_alignment': body_alignment}
-            from exercises.base_exercise import ExerciseMeasurements
-            temp = ExerciseMeasurements(angles=angles, alignments={}, distances={}, phase='', is_valid=True)
+            angles = {
+                'elbow_angle': elbow_angle,
+                'sag_deg': 0.0, 'pike_deg': 0.0,
+                'elbow_flare': 0.0, 'shoulder_depth_ok': 1.0,
+                'tempo': 0.0, 'timestamp': 0.0
+            }
+            temp  = ExerciseMeasurements(
+                angles=angles, alignments={}, distances={},
+                phase='', is_valid=True
+            )
             phase = self.determine_phase(temp)
-            return ExerciseMeasurements(angles=angles, alignments={'body': body_alignment}, distances={}, phase=phase, is_valid=True)
+            return ExerciseMeasurements(
+                angles=angles, alignments={}, distances={},
+                phase=phase, is_valid=True
+            )
         except Exception as e:
             logger.error(f"Pushup compute error: {e}")
             return None
-
-
+        
 class PlankExercise(BaseExercise):
     """Plank exercise implementation"""
     

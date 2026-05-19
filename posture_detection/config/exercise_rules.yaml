@@ -6,7 +6,7 @@ general:
   confidence_threshold: 0.7  # Minimum landmark confidence
   smoothing_frames: 3  # Number of frames for moving average
   fps_target: 30
-  feedback_cooldown: 1.0  # Seconds between same feedback
+  feedback_cooldown: 2.0  # Seconds between same feedback
 
 calibration:
   required: true
@@ -44,9 +44,9 @@ squat:
       description: "Coming back up"
 
   rep_counting:
-    down_threshold: 100  # Knee angle to register "down"
+    down_threshold: 115  # Knee angle to register "down"
     up_threshold: 155  # Knee angle to register "up"
-    min_rep_time: 1.2  # Minimum seconds per rep
+    min_rep_time: 0.6 # Minimum seconds per rep
   
   form_checks:
     - name: "knee_depth"
@@ -234,9 +234,9 @@ bicep_curl:
       description: "Lowering down"
 
   rep_counting:
-    down_threshold: 50  # Elbow angle to register "up" (contracted)
-    up_threshold: 170  # Elbow angle to register "down" (extended)
-    min_rep_time: 1.0
+    down_threshold: 55  # Elbow angle to register "up" (contracted)
+    up_threshold: 160  # Elbow angle to register "down" (extended)
+    min_rep_time: 0.6
   
   form_checks:
     - name: "full_contraction"

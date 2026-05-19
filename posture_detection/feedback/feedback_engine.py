@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class FeedbackEngine:
     """Generate and manage exercise feedback"""
     
-    def __init__(self, cooldown_seconds: float = .5):
+    def __init__(self, cooldown_seconds: float = 2.0):
         self.cooldown_seconds = cooldown_seconds
         self.last_feedback_time = {}
         self.last_feedback_message = None

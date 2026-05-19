@@ -99,7 +99,7 @@ class RepCounter:
             'state': self.current_state.value,
             'mode': self.mode,
             'hold_duration': self.hold_duration if self.mode == 'duration' else 0,
-            'is_holding': self.hold_start_time is not None
+            'is_holding': self.hold_start_time is not None,
             'direction': self.direction
         }
     

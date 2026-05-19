@@ -219,6 +219,11 @@ class PostureDetectionSystem:
                 self.current_exercise.set_body_proportions(
                     bp.total_height, bp.hip_width
                 )
+        # Pass calibration body proportions to pushup
+        if exercise_name == 'pushup' and self.calibrator.is_calibrated:
+            bp = self.calibrator.body_proportions
+            if bp:
+                self.current_exercise.set_body_proportions(bp.total_height)
     
         # Give exercise access to calibrator
         self.current_exercise.calibrator = self.calibrator
@@ -330,19 +335,39 @@ class PostureDetectionSystem:
         self.is_running = True
         self.frame_stabilizer.reset()
         self.rep_counter.reset()
-        if self.current_exercise.exercise_name == 'squat':
+        ex_name = self.current_exercise.exercise_name
+        if ex_name == 'squat':
             self._show_camera_prompt(
-                "SQUAT SETUP",
-                [
-                    "For best accuracy, turn your body",
-                    "30-45 degrees to the side.",
-                    "",
-                    "Camera should see your full body",
-                    "from a slight side angle.",
-                    "",
-                    "Press SPACE to start when ready."
-                ]
-            )
+                    "SQUAT SETUP",
+                    [
+                        "For best accuracy, turn your body",
+                        "30-45 degrees to the side.",
+                        "",
+                        "Camera should see your full body",
+                        "from a slight side angle.",
+                        "",
+                        "Press SPACE to start when ready."
+                    ]
+                    )
+        elif ex_name in ('pushup', 'plank'):
+            self._show_camera_prompt(
+                    "SIDE VIEW NEEDED",
+                    [
+                        "This exercise needs a SIDE VIEW.",
+                        "",
+                        "Turn your body 90 degrees so the",
+                        "camera sees you from the side.",
+                        "",
+                        "Full body should be visible.",
+                        "",
+                        "Press SPACE to start when ready."
+                    ]
+                )
+
+        start_time = time.time()
+        frame_count = 0
+
+        logger.info(f"Starting exercise session: {self.current_exercise.exercise_name}")
 
         
         start_time = time.time()
@@ -416,7 +441,7 @@ class PostureDetectionSystem:
                         result.landmarks,
                         measurements.angles,
                         self.current_exercise.exercise_name,
-                        form_score
+                        form_score,
                         phase=measurements.phase
                     )
                 else:
@@ -578,10 +603,11 @@ class PostureDetectionSystem:
         return frame
     
     def _show_camera_prompt(self, title: str, lines: list):
-        """Show a fullscreen instruction prompt. User presses SPACE to continue."""
-        if not self.camera_manager.open():
-            return
-
+        """
+        Show fullscreen instruction prompt using the already-open camera.
+        User presses SPACE or Q to continue.
+        Does NOT open or release the camera.
+        """
         while True:
             ret, frame = self.camera_manager.read_frame()
             if not ret:
@@ -619,11 +645,8 @@ class PostureDetectionSystem:
 
             cv2.imshow("Posture Detection", frame)
             key = cv2.waitKey(1) & 0xFF
-            if key == ord(' ') or key == ord('q'):
+            if key == ord(' ') or key == ord('c'):
                 break
-
-        cv2.destroyAllWindows()
-        self.camera_manager.release()
 
 def main():
     """Main entry point"""
